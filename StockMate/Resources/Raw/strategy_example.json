@@ -1,0 +1,10 @@
+{
+  "Version": "1.0.0",
+  "MinimumRiskReward": 2.0,
+  "VolumeConfirmation": 1.25,
+  "AtrStopMultiplier": 1.35,
+  "BuyScore": 78,
+  "WatchScore": 65,
+  "MaximumNormalPosition": 2000000,
+  "MaximumSpeculativePosition": 500000
+}

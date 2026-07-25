@@ -1,4 +1,14 @@
-# StockMate 1.6.12
+# StockMate 1.6.13
+
+## Perbaikan progres background 1.6.13
+
+- Ambil/perbarui data manual memakai foreground service yang sama dengan scan
+  terjadwal, sehingga proses tidak bergantung pada halaman Scanner tetap buka.
+- Notifikasi progres tetap tersedia ketika UI ditutup dan meninggalkan status
+  akhir untuk kondisi selesai, gagal, dihentikan, atau menunggu retry closing.
+- Progres terakhir disimpan dan ditampilkan kembali saat Scanner dibuka.
+- Pengaturan Background scanner menyediakan tombol untuk memeriksa izin dan
+  channel notifikasi progres Android.
 
 ## Ringkasan keputusan 1.6.12
 

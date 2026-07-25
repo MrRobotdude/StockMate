@@ -74,6 +74,9 @@ public sealed class SettingsPage : ContentPage
         var exactAlarm = UiKit.Secondary("Izinkan jadwal presisi Android");
         exactAlarm.Clicked += (_, _) =>
             BackgroundScanScheduler.OpenExactAlarmSettings(Android.App.Application.Context);
+        var notificationSettings = UiKit.Secondary("Periksa notifikasi progres");
+        notificationSettings.Clicked += (_, _) =>
+            ScanServiceBridge.OpenNotificationSettings();
         root.Children.Add(UiKit.ExpandableCard(
             Loc.T("Background scanner", "Background scanner"),
             Loc.T("Tetap berjalan saat aplikasi ditutup", "Continues when the app is closed"),
@@ -84,6 +87,7 @@ public sealed class SettingsPage : ContentPage
                 {
                     autoRow,
                     exactAlarm,
+                    notificationSettings,
                     UiKit.Sub(Loc.T(
                         "Android akan membangunkan StockMate sekitar 12.15 dan 16.30 pada hari bursa. Jika closing belum siap, aplikasi menjadwalkan pemeriksaan ulang. Download panjang memakai notifikasi foreground. Force Stop tetap menghentikan seluruh pekerjaan sampai aplikasi dibuka kembali.",
                         "Android wakes StockMate around 12:15 and 16:30 on trading days. If closing is not ready, another check is scheduled. Long downloads use a foreground notification. Force Stop still blocks all work until the app is opened again."))

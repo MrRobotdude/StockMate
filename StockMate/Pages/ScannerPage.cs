@@ -299,10 +299,19 @@ public sealed class ScannerPage : ContentPage
         SetScannerActionsEnabled(false);
         try
         {
-            _status.Text = Loc.T("Mengambil data pasar…", "Fetching market data…");
-            var progress = new Progress<ScanProgress>(OnProgress);
-            var snapshot = await Task.Run(() => _engine.RefreshMarketDataAsync(
-                intraday, forceRefresh, progress, _cts.Token));
+            OnProgress(new ScanProgress
+            {
+                Stage = "PREPARING",
+                Message = "Menyalakan layanan download. Aplikasi boleh ditutup."
+            });
+            _status.Text = "Progres tetap tampil di notifikasi Android saat aplikasi ditutup.";
+            var ok = await ScanServiceBridge.StartAsync(
+                intraday, forceRefresh, downloadOnly: true);
+            if (!ok)
+                throw new InvalidOperationException(
+                    ScanServiceBridge.CurrentProgress.Message);
+            var snapshot = _engine.GetSnapshot(intraday)
+                ?? throw new InvalidOperationException("Download selesai tanpa snapshot.");
             _status.Text = Loc.T(
                 $"Data siap • {snapshot.Symbols.Count}/{snapshot.RequestedCount} saham. Tekan Analisis snapshot.",
                 $"Data ready • {snapshot.Symbols.Count}/{snapshot.RequestedCount} stocks. Tap Analyze snapshot.");

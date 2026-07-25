@@ -7,6 +7,7 @@ using Microsoft.Maui.ApplicationModel;
 using StockMate.Services;
 using StockMate.Models;
 using System.Runtime.Versioning;
+using System.Text.Json;
 
 namespace StockMate.Platforms.Android;
 
@@ -15,17 +16,33 @@ public static class ScanServiceBridge
     static TaskCompletionSource<bool>? _completion;
     public static event Action<ScanProgress>? ProgressChanged;
     public static bool IsRunning { get; internal set; }
-    public static ScanProgress CurrentProgress { get; private set; } = new();
+    const string ProgressPreferenceKey = "scanner.last_progress";
+    public static ScanProgress CurrentProgress { get; private set; } = RestoreProgress();
     static long _lastUiReportTicks;
+    static long _lastPersistTicks;
 
-    public static Task StartAsync(bool intraday, bool forceRefresh)
+    public static bool NotificationsEnabled =>
+        NotificationManagerCompat.From(global::Android.App.Application.Context)
+            .AreNotificationsEnabled();
+
+    public static void OpenNotificationSettings()
     {
-        if (IsRunning) return _completion?.Task ?? Task.CompletedTask;
+        var context = global::Android.App.Application.Context;
+        var intent = new Intent(global::Android.Provider.Settings.ActionAppNotificationSettings)
+            .PutExtra(global::Android.Provider.Settings.ExtraAppPackage, context.PackageName)
+            .AddFlags(ActivityFlags.NewTask);
+        context.StartActivity(intent);
+    }
+
+    public static Task<bool> StartAsync(bool intraday, bool forceRefresh, bool downloadOnly = false)
+    {
+        if (IsRunning) return _completion?.Task ?? Task.FromResult(false);
         _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         var context = global::Android.App.Application.Context;
         var intent = new Intent(context, typeof(ScanForegroundService));
         intent.PutExtra("intraday", intraday);
         intent.PutExtra("force", forceRefresh);
+        intent.PutExtra("downloadOnly", downloadOnly);
         if (Build.VERSION.SdkInt >= BuildVersionCodes.O) context.StartForegroundService(intent);
         else context.StartService(intent);
         return _completion.Task;
@@ -62,6 +79,11 @@ public static class ScanServiceBridge
         var important = progress.Stage is "BATCH_START" or "BATCH_COMPLETE" or
             "REQUEST_ERROR" or "RATE_LIMIT" or "FORBIDDEN_RETRY" or
             "COMPLETE" or "ERROR";
+        if (important || nowTicks - _lastPersistTicks >= 1000)
+        {
+            _lastPersistTicks = nowTicks;
+            PersistProgress(progress);
+        }
         if (important || nowTicks - _lastUiReportTicks >= 150)
         {
             _lastUiReportTicks = nowTicks;
@@ -91,6 +113,28 @@ public static class ScanServiceBridge
         });
         _completion?.TrySetResult(ok);
     }
+
+    static ScanProgress RestoreProgress()
+    {
+        try
+        {
+            var json = Preferences.Default.Get(ProgressPreferenceKey, "");
+            return string.IsNullOrWhiteSpace(json)
+                ? new ScanProgress()
+                : JsonSerializer.Deserialize<ScanProgress>(json) ?? new ScanProgress();
+        }
+        catch { return new ScanProgress(); }
+    }
+
+    static void PersistProgress(ScanProgress progress)
+    {
+        try
+        {
+            Preferences.Default.Set(ProgressPreferenceKey,
+                JsonSerializer.Serialize(progress));
+        }
+        catch { }
+    }
 }
 
 [SupportedOSPlatform("android")]
@@ -119,14 +163,18 @@ public sealed class ScanForegroundService : Service
         var intraday = intent?.GetBooleanExtra("intraday", false) ?? false;
         var force = intent?.GetBooleanExtra("force", false) ?? false;
         var scheduled = intent?.GetBooleanExtra("scheduled", false) ?? false;
+        var downloadOnly = intent?.GetBooleanExtra("downloadOnly", false) ?? false;
         // A Service starts on Android's main looper. Run the complete network
         // pipeline on a worker so no handler can perform network I/O on it.
-        _ = Task.Run(() => RunAsync(intraday, force, scheduled, _cts.Token), _cts.Token);
+        _ = Task.Run(() => RunAsync(intraday, force, scheduled, downloadOnly, _cts.Token), _cts.Token);
         return StartCommandResult.NotSticky;
     }
 
-    async Task RunAsync(bool intraday, bool force, bool scheduled, CancellationToken ct)
+    async Task RunAsync(
+        bool intraday, bool force, bool scheduled, bool downloadOnly, CancellationToken ct)
     {
+        var finalTitle = "StockMate scanner selesai";
+        var finalMessage = "Proses selesai.";
         try
         {
             var services = IPlatformApplication.Current?.Services
@@ -138,39 +186,60 @@ public sealed class ScanForegroundService : Service
             await data.LoadAsync();
             if (scheduled && !data.State.AutoScanAfterClose)
             {
-                ScanServiceBridge.Complete(true, "Scan otomatis nonaktif.");
+                finalTitle = "StockMate scan otomatis nonaktif";
+                finalMessage = "Jadwal dilewati karena scan closing otomatis dimatikan.";
+                ScanServiceBridge.Complete(true, finalMessage);
                 return;
             }
             var progress = new DirectProgress<ScanProgress>(UpdateNotification);
-            var result = await engine.RunAsync(
-                intraday, force, progress, ct, requireVerifiedClosing: scheduled);
-            var snapshot = result.Snapshot
-                ?? throw new InvalidOperationException("Scanner selesai tanpa snapshot.");
-            var decisions = services.GetService<PortfolioDecisionService>();
-            if (decisions is not null) await decisions.RebuildAsync();
-            ScanServiceBridge.Complete(true,
-                $"Scan selesai • {snapshot.Symbols.Count}/{snapshot.RequestedCount} saham");
+            MarketSnapshot snapshot;
+            if (downloadOnly)
+            {
+                snapshot = await engine.RefreshMarketDataAsync(
+                    intraday, force, progress, ct, requireVerifiedClosing: scheduled);
+                finalMessage =
+                    $"Data siap • {snapshot.Symbols.Count}/{snapshot.RequestedCount} saham. Buka Scanner untuk analisis.";
+            }
+            else
+            {
+                var result = await engine.RunAsync(
+                    intraday, force, progress, ct, requireVerifiedClosing: scheduled);
+                snapshot = result.Snapshot
+                    ?? throw new InvalidOperationException("Scanner selesai tanpa snapshot.");
+                var decisions = services.GetService<PortfolioDecisionService>();
+                if (decisions is not null) await decisions.RebuildAsync();
+                finalMessage =
+                    $"Scan selesai • {snapshot.Symbols.Count}/{snapshot.RequestedCount} saham";
+            }
+            ScanServiceBridge.Complete(true, finalMessage);
         }
         catch (ClosingDataNotReadyException ex)
         {
             BackgroundScanScheduler.ScheduleRetry(this, intraday, TimeSpan.FromMinutes(10));
-            ScanServiceBridge.Complete(true, $"{ex.Message} Cek ulang otomatis 10 menit lagi.");
+            finalTitle = "StockMate menunggu data closing";
+            finalMessage = $"{ex.Message} Cek ulang otomatis 10 menit lagi.";
+            ScanServiceBridge.Complete(true, finalMessage);
         }
         catch (System.OperationCanceledException)
         {
-            ScanServiceBridge.Complete(false, "Scan dihentikan. Progres tersimpan dan dapat dilanjutkan.");
+            finalTitle = "StockMate scanner dihentikan";
+            finalMessage = "Scan dihentikan. Progres terakhir tetap tersimpan.";
+            ScanServiceBridge.Complete(false, finalMessage);
         }
         catch (Exception ex)
         {
-            ScanServiceBridge.Complete(false, $"Scan gagal: {ex.Message}");
+            finalTitle = "StockMate scanner gagal";
+            finalMessage = $"Scan gagal: {ex.Message}";
+            ScanServiceBridge.Complete(false, finalMessage);
         }
         finally
         {
+            PublishFinalNotification(finalTitle, finalMessage);
             if (Build.VERSION.SdkInt >= BuildVersionCodes.N)
-                StopForeground(StopForegroundFlags.Remove);
+                StopForeground(StopForegroundFlags.Detach);
             else
 #pragma warning disable CS0618
-                StopForeground(true);
+                StopForeground(false);
 #pragma warning restore CS0618
             StopSelf();
         }
@@ -196,9 +265,33 @@ public sealed class ScanForegroundService : Service
             .SetContentTitle("StockMate sedang mengambil data")
             .SetContentText(progress.DisplayText)
             .SetSmallIcon(Resource.Mipmap.appicon)
+            .SetContentIntent(BuildContentIntent())
             .SetOnlyAlertOnce(true).SetOngoing(true);
         builder.SetProgress(progress.Total, progress.Completed, progress.IsIndeterminate);
         return builder.Build() ?? throw new InvalidOperationException("Notifikasi foreground gagal dibuat.");
+    }
+
+    void PublishFinalNotification(string title, string text)
+    {
+        var notification = new NotificationCompat.Builder(this, ChannelId)
+            .SetContentTitle(title)
+            .SetContentText(text)
+            .SetStyle(new NotificationCompat.BigTextStyle().BigText(text))
+            .SetSmallIcon(Resource.Mipmap.appicon)
+            .SetContentIntent(BuildContentIntent())
+            .SetOngoing(false)
+            .SetAutoCancel(true)
+            .Build();
+        if (notification is not null)
+            NotificationManagerCompat.From(this).Notify(NotificationId, notification);
+    }
+
+    PendingIntent BuildContentIntent()
+    {
+        var intent = new Intent(this, typeof(MainActivity))
+            .AddFlags(ActivityFlags.SingleTop | ActivityFlags.ClearTop);
+        return PendingIntent.GetActivity(this, 1401, intent,
+            PendingIntentFlags.UpdateCurrent | PendingIntentFlags.Immutable)!;
     }
 
     void CreateChannel()

@@ -8,13 +8,17 @@ public sealed class DashboardPage : ContentPage
 {
     readonly AppDataService _data;
     readonly PortfolioDecisionService _decisions;
+    readonly EventIntelligenceService _events;
     readonly VerticalStackLayout _root = UiKit.PageStack();
     bool _isPreparing;
 
-    public DashboardPage(AppDataService data, PortfolioDecisionService decisions)
+    public DashboardPage(
+        AppDataService data, PortfolioDecisionService decisions,
+        EventIntelligenceService events)
     {
         _data = data;
         _decisions = decisions;
+        _events = events;
         Title = Loc.T("Ringkasan", "Summary");
         BackgroundColor = UiKit.Navy;
         Content = new ScrollView { Content = _root };
@@ -178,26 +182,30 @@ public sealed class DashboardPage : ContentPage
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var scan in _data.State.LastScan.Where(x =>
                      !held.Contains(x.Symbol) &&
-                     x.Score >= _data.State.Strategy.BuyScore &&
+                     x.Score + _events.Summarize(x.Symbol).Adjustment >=
+                         _data.State.Strategy.BuyScore &&
                      x.LastPrice <= x.MaxBuyPrice).Take(5))
         {
+            var eventView = _events.Summarize(scan.Symbol);
+            var combinedScore = Math.Clamp(scan.Score + eventView.Adjustment, 0, 100);
             var lots = _data.State.Cash <= 0 ? 0 : Math.Min(scan.SuggestedLots,
                 (int)Math.Floor(_data.State.Cash * .20m / Math.Max(1, scan.LastPrice * 100)));
             yield return new RecommendationItem
             {
                 Symbol = scan.Symbol,
                 Action = lots > 0 ? Loc.T("BUKA POSISI", "OPEN POSITION") : Loc.T("PANTAU", "WATCH"),
-                Confidence = scan.Score >= 82 ? Loc.T("TINGGI", "HIGH") : Loc.T("SEDANG", "MEDIUM"),
+                Confidence = combinedScore >= 82 ? Loc.T("TINGGI", "HIGH") : Loc.T("SEDANG", "MEDIUM"),
                 SuggestedLots = lots,
                 EntryLow = scan.EntryLow,
                 EntryHigh = scan.EntryHigh,
                 ReferencePrice = scan.LastPrice,
                 Detail = lots > 0
-                    ? $"{lots} lot di Rp {scan.EntryLow:N0}–{scan.EntryHigh:N0}; maksimal Rp {scan.MaxBuyPrice:N0}."
+                    ? $"{lots} lot di Rp {scan.EntryLow:N0}–{scan.EntryHigh:N0}; maksimal Rp {scan.MaxBuyPrice:N0}. " +
+                      $"Teknikal {scan.Score}/100, isu {eventView.Adjustment:+#;-#;0}."
                     : Loc.T("Setup lolos, tetapi kas belum cukup.", "Setup passed, but cash is insufficient."),
-                RiskDetail = $"Risk/reward {scan.RiskReward:N2}.",
+                RiskDetail = $"Risk/reward {scan.RiskReward:N2}. {eventView.Summary}",
                 Stop = scan.StopLoss, Target = scan.Target1,
-                Priority = (lots > 0 ? 70 : 20) + scan.Score
+                Priority = (lots > 0 ? 70 : 20) + combinedScore
             };
         }
     }

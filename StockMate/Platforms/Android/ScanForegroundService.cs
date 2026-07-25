@@ -164,14 +164,16 @@ public sealed class ScanForegroundService : Service
         var force = intent?.GetBooleanExtra("force", false) ?? false;
         var scheduled = intent?.GetBooleanExtra("scheduled", false) ?? false;
         var downloadOnly = intent?.GetBooleanExtra("downloadOnly", false) ?? false;
+        var eventOnly = intent?.GetBooleanExtra("eventOnly", false) ?? false;
         // A Service starts on Android's main looper. Run the complete network
         // pipeline on a worker so no handler can perform network I/O on it.
-        _ = Task.Run(() => RunAsync(intraday, force, scheduled, downloadOnly, _cts.Token), _cts.Token);
+        _ = Task.Run(() => RunAsync(intraday, force, scheduled, downloadOnly, eventOnly, _cts.Token), _cts.Token);
         return StartCommandResult.NotSticky;
     }
 
     async Task RunAsync(
-        bool intraday, bool force, bool scheduled, bool downloadOnly, CancellationToken ct)
+        bool intraday, bool force, bool scheduled, bool downloadOnly,
+        bool eventOnly, CancellationToken ct)
     {
         var finalTitle = "StockMate scanner selesai";
         var finalMessage = "Proses selesai.";
@@ -184,6 +186,28 @@ public sealed class ScanForegroundService : Service
             var data = services.GetService<AppDataService>()
                 ?? throw new InvalidOperationException("Penyimpanan aplikasi tidak tersedia.");
             await data.LoadAsync();
+            var eventIntel = services.GetService<EventIntelligenceService>();
+            if (eventOnly)
+            {
+                if (!data.State.AutoEventIntelligence)
+                {
+                    finalMessage = "Analisis isu otomatis nonaktif.";
+                    ScanServiceBridge.Complete(true, finalMessage);
+                    return;
+                }
+                UpdateNotification(new()
+                {
+                    Stage = "EVENTS",
+                    Message = "Memeriksa isu pasar, portofolio, dan kandidat teratas"
+                });
+                var count = eventIntel is null ? 0 : await eventIntel.RefreshAsync(ct);
+                var eventDecisions = services.GetService<PortfolioDecisionService>();
+                if (eventDecisions is not null) await eventDecisions.RebuildAsync();
+                finalTitle = "Analisis isu StockMate selesai";
+                finalMessage = $"{count} berita relevan diperbarui. Buka detail saham untuk dampaknya.";
+                ScanServiceBridge.Complete(true, finalMessage);
+                return;
+            }
             if (scheduled && !data.State.AutoScanAfterClose)
             {
                 finalTitle = "StockMate scan otomatis nonaktif";
@@ -208,6 +232,16 @@ public sealed class ScanForegroundService : Service
                     ?? throw new InvalidOperationException("Scanner selesai tanpa snapshot.");
                 var decisions = services.GetService<PortfolioDecisionService>();
                 if (decisions is not null) await decisions.RebuildAsync();
+                if (data.State.AutoEventIntelligence && eventIntel is not null)
+                {
+                    UpdateNotification(new()
+                    {
+                        Stage = "EVENTS",
+                        Message = "Memperbarui isu setelah closing"
+                    });
+                    await eventIntel.RefreshAsync(ct);
+                    if (decisions is not null) await decisions.RebuildAsync();
+                }
                 finalMessage =
                     $"Scan selesai • {snapshot.Symbols.Count}/{snapshot.RequestedCount} saham";
             }

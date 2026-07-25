@@ -32,6 +32,9 @@ public sealed class AppState
     public List<string> MarketUniverse { get; set; } = [];
     public List<MarketSnapshot> MarketSnapshots { get; set; } = [];
     public List<PortfolioDecision> PortfolioDecisions { get; set; } = [];
+    public List<EventInsight> EventInsights { get; set; } = [];
+    public bool AutoEventIntelligence { get; set; } = true;
+    public DateTime? EventIntelligenceUpdatedAt { get; set; }
     // Scheduled by Android at 12:15 and 16:30 WIB. This is deliberately
     // independent from opening the Scanner page.
     public bool AutoScanAfterClose { get; set; } = true;
@@ -84,7 +87,23 @@ public sealed class PortfolioDecision
     public string TakeProfitAction { get; set; } = "";
     public string Reason { get; set; } = "";
     public string Invalidation { get; set; } = "";
+    public int TechnicalScore { get; set; }
+    public int EventAdjustment { get; set; }
+    public string EventSummary { get; set; } = "Data isu belum tersedia.";
     public DateTime GeneratedAt { get; set; } = DateTime.Now;
+}
+
+public sealed class EventInsight
+{
+    public string Symbol { get; set; } = "MARKET";
+    public string Title { get; set; } = "";
+    public string Source { get; set; } = "";
+    public string Url { get; set; } = "";
+    public DateTime PublishedAt { get; set; }
+    public int Impact { get; set; }
+    public string Direction { get; set; } = "NETRAL";
+    public string Reason { get; set; } = "";
+    public DateTime RetrievedAt { get; set; } = DateTime.Now;
 }
 
 public sealed class MarketSnapshot

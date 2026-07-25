@@ -14,7 +14,9 @@ public sealed class AppShell : Shell
         var data = App.Services.GetRequiredService<Services.AppDataService>();
         Loc.Use(data.State.LanguageCode);
         Items.Add(Tab(Loc.T("Ringkasan", "Summary"), "⌂", () => new DashboardPage(
-            data, App.Services.GetRequiredService<Services.PortfolioDecisionService>())));
+            data,
+            App.Services.GetRequiredService<Services.PortfolioDecisionService>(),
+            App.Services.GetRequiredService<Services.EventIntelligenceService>())));
         Items.Add(Tab(Loc.T("Portofolio", "Portfolio"), "▤", () => new PortfolioPage(
             data, App.Services.GetRequiredService<Services.PortfolioDecisionService>())));
         Items.Add(Tab(Loc.T("Scanner", "Scanner"), "⌕", () => new ScannerPage(

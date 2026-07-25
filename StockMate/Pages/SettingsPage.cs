@@ -12,7 +12,7 @@ public sealed class SettingsPage : ContentPage
     readonly AppDataService _data;
     readonly UniverseService _universe;
     readonly Entry _cash=new(){Keyboard=Keyboard.Numeric}, _officialRealized=new(){Keyboard=Keyboard.Numeric}, _risk=new(){Keyboard=Keyboard.Numeric}, _monthly=new(){Keyboard=Keyboard.Numeric}, _buyFee=new(){Keyboard=Keyboard.Numeric}, _sellFee=new(){Keyboard=Keyboard.Numeric}, _delay=new(){Keyboard=Keyboard.Numeric};
-    readonly Switch _speculative=new(), _autoScan=new();
+    readonly Switch _speculative=new(), _autoScan=new(), _autoEvents=new();
     readonly Picker _language = new() { Title = "Bahasa / Language", ItemsSource = new[] { "Bahasa Indonesia", "English" } };
     readonly Label _universeInfo=UiKit.Sub("");
     public SettingsPage(AppDataService data, UniverseService universe)
@@ -71,6 +71,19 @@ public sealed class SettingsPage : ContentPage
             }
         }, 0);
         autoRow.Add(_autoScan, 1);
+        var eventRow = new Grid
+        {
+            ColumnDefinitions = [new(GridLength.Star), new(GridLength.Auto)]
+        };
+        eventRow.Add(new VerticalStackLayout
+        {
+            Children =
+            {
+                new Label { Text = "Analisis isu opening & closing", TextColor = Colors.White },
+                UiKit.Sub("Gratis • sekitar 08.45 & setelah closing • portofolio + kandidat teratas")
+            }
+        }, 0);
+        eventRow.Add(_autoEvents, 1);
         var exactAlarm = UiKit.Secondary("Izinkan jadwal presisi Android");
         exactAlarm.Clicked += (_, _) =>
             BackgroundScanScheduler.OpenExactAlarmSettings(Android.App.Application.Context);
@@ -86,6 +99,7 @@ public sealed class SettingsPage : ContentPage
                 Children =
                 {
                     autoRow,
+                    eventRow,
                     exactAlarm,
                     notificationSettings,
                     UiKit.Sub(Loc.T(
@@ -206,6 +220,7 @@ public sealed class SettingsPage : ContentPage
         _officialRealized.Text=_data.State.OfficialRealizedProfit?.ToString("0") ?? "";
         _buyFee.Text=(_data.State.BuyFeeRate*100).ToString("0.###"); _sellFee.Text=(_data.State.SellFeeRate*100).ToString("0.###"); _speculative.IsToggled=_data.State.IncludeSpeculative;
         _autoScan.IsToggled = _data.State.AutoScanAfterClose;
+        _autoEvents.IsToggled = _data.State.AutoEventIntelligence;
         _language.SelectedIndex = _data.State.LanguageCode == "en" ? 1 : 0;
         _delay.Text=_data.State.RequestDelayMilliseconds.ToString();
         _universeInfo.Text=$"Universe aktif: {_universe.Symbols.Count} saham • sumber: {(_data.State.UniverseSource.Length==0?"fallback lokal":_data.State.UniverseSource)} • diperbarui {(_data.State.UniverseUpdatedAt?.ToString("dd MMM yyyy")??"belum pernah")}.";
@@ -254,6 +269,7 @@ public sealed class SettingsPage : ContentPage
         _data.RecalculateCash();
         _data.State.IncludeSpeculative=_speculative.IsToggled;
         _data.State.AutoScanAfterClose = _autoScan.IsToggled;
+        _data.State.AutoEventIntelligence = _autoEvents.IsToggled;
         if (_data.State.AutoScanAfterClose)
             BackgroundScanScheduler.ScheduleDaily(Android.App.Application.Context);
         else

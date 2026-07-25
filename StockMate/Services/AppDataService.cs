@@ -105,6 +105,7 @@ public sealed class AppDataService
         State.MarketSnapshots ??= [];
         State.TransactionImports ??= [];
         State.PortfolioDecisions ??= [];
+        State.EventInsights ??= [];
         foreach (var snapshot in State.MarketSnapshots)
         {
             snapshot.FailedSymbols ??= [];
@@ -170,6 +171,12 @@ public sealed class AppDataService
             // Android background schedule requested by the user.
             State.AutoScanAfterClose = true;
             State.DataSchemaVersion = 172;
+        }
+        if (State.DataSchemaVersion < 1700)
+        {
+            State.EventInsights ??= [];
+            State.AutoEventIntelligence = true;
+            State.DataSchemaVersion = 1700;
         }
         // Positions are derived only from imported or explicitly entered
         // transactions. Never manufacture opening transactions from UI data.

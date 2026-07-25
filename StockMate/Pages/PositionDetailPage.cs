@@ -1,6 +1,7 @@
 using StockMate.Models;
 using StockMate.Services;
 using StockMate.Ui;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace StockMate.Pages;
 
@@ -91,6 +92,10 @@ public sealed class PositionDetailPage : ContentPage
                 Children =
                 {
                     UiKit.Sub(decision.Reason),
+                    UiKit.Sub(decision.EventSummary),
+                    MetricLine("Skor teknikal", $"{decision.TechnicalScore}/100"),
+                    MetricLine("Penyesuaian isu", $"{decision.EventAdjustment:+#;-#;0}"),
+                    MetricLine("Skor gabungan", $"{decision.Score}/100"),
                     MetricLine("Area tambah", $"Rp {decision.EntryLow:N0}–{decision.EntryHigh:N0}"),
                     MetricLine("Batas harga beli", $"Rp {decision.MaxBuyPrice:N0}"),
                     MetricLine("Jumlah tambah", decision.SuggestedLots > 0
@@ -193,6 +198,12 @@ public sealed class PositionDetailPage : ContentPage
             "Risiko & pembatalan",
             $"Jangan beli di atas Rp {scan.MaxBuyPrice:N0}",
             UiKit.Sub($"{scan.Risks}\n\nRekomendasi batal jika harga melewati batas beli atau menembus stop loss.")));
+        var eventView = App.Services.GetRequiredService<EventIntelligenceService>()
+            .Summarize(_symbol);
+        _root.Children.Add(UiKit.ExpandableCard(
+            "Isu & peristiwa terbaru",
+            $"Penyesuaian skor {eventView.Adjustment:+#;-#;0}",
+            UiKit.Sub(eventView.Summary)));
 
         var buy = UiKit.Primary("Catat BUY");
         buy.IsEnabled = scan.SuggestedLots > 0 && scan.Verdict.Contains("BUY");

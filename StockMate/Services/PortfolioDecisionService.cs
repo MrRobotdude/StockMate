@@ -2,7 +2,8 @@ using StockMate.Models;
 
 namespace StockMate.Services;
 
-public sealed class PortfolioDecisionService(AppDataService data)
+public sealed class PortfolioDecisionService(
+    AppDataService data, EventIntelligenceService events)
 {
     long _builtForRevision = -1;
     readonly SemaphoreSlim _gate = new(1, 1);
@@ -27,12 +28,15 @@ public sealed class PortfolioDecisionService(AppDataService data)
         {
             scans.TryGetValue(p.Symbol, out var scan);
             var weight = totalEquity <= 0 ? 0 : p.MarketValue / totalEquity;
-            var score = scan?.Score ?? 0;
+            var technicalScore = scan?.Score ?? 0;
+            var eventView = events.Summarize(p.Symbol);
+            var score = Math.Clamp(technicalScore + eventView.Adjustment, 0, 100);
             var action = "HOLD - JANGAN TAMBAH";
             var lots = 0;
             var reason = scan is null
                 ? "Belum ada skor terbaru untuk posisi ini; keputusan agresif ditahan."
-                : $"Skor teknikal {score}/100, P/L {p.ProfitLossPercent:+0.0;-0.0;0.0}%, bobot {weight:P0}.";
+                : $"Teknikal {technicalScore}/100, penyesuaian isu {eventView.Adjustment:+#;-#;0}, " +
+                  $"skor gabungan {score}/100, P/L {p.ProfitLossPercent:+0.0;-0.0;0.0}%, bobot {weight:P0}.";
 
             if (scan is not null && p.LastPrice <= scan.StopLoss)
                 action = "SELL ALL / CUT LOSS";
@@ -55,6 +59,9 @@ public sealed class PortfolioDecisionService(AppDataService data)
             decisions.Add(new()
             {
                 Symbol = p.Symbol, Action = action, Score = score, SuggestedLots = lots,
+                TechnicalScore = technicalScore,
+                EventAdjustment = eventView.Adjustment,
+                EventSummary = eventView.Summary,
                 ReferencePrice = p.LastPrice, StopLoss = scan?.StopLoss ?? p.StopLoss,
                 EntryLow = scan?.EntryLow ?? p.LastPrice,
                 EntryHigh = scan?.EntryHigh ?? p.LastPrice,

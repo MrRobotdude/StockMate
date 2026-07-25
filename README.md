@@ -1,6 +1,22 @@
-# StockMate 1.6.13
+# StockMate 0.7.0
 
-## Perbaikan progres background 1.6.13
+StockMate masih berada pada tahap pengembangan awal. Nomor versi publik memakai
+format `0.MINOR.PATCH`: fitur yang sudah stabil untuk satu milestone digabung
+dalam versi minor yang sama, sedangkan perbaikan kecil cukup menaikkan build
+APK tanpa membuat versi publik baru.
+
+## Yang tersedia di milestone 0.7
+
+- Sekitar 08.45 WIB memperbarui konteks sebelum pembukaan.
+- Setelah scan closing 16.30 WIB memperbarui isu dan keputusan gabungan.
+- Cakupan dibatasi ke portofolio, 20 kandidat teratas, dan konteks pasar.
+- Detail memisahkan skor teknikal, penyesuaian isu, skor gabungan, sumber, dan waktu.
+- Dampak isu dibatasi -8 sampai +6 dan tidak mengalahkan aturan stop-loss.
+
+Feed gratis dapat terlambat atau tidak lengkap. Jika data tidak cukup, aplikasi
+menyatakan keputusan tetap berbasis teknikal dan tidak mengarang sentimen.
+
+### Background scanner yang lebih tahan
 
 - Ambil/perbarui data manual memakai foreground service yang sama dengan scan
   terjadwal, sehingga proses tidak bergantung pada halaman Scanner tetap buka.
@@ -9,8 +25,12 @@
 - Progres terakhir disimpan dan ditampilkan kembali saat Scanner dibuka.
 - Pengaturan Background scanner menyediakan tombol untuk memeriksa izin dan
   channel notifikasi progres Android.
+- Android dapat mengirim ulang pekerjaan bila service direklamasi sistem.
+- CPU dan Wi-Fi lock dipakai hanya selama pekerjaan aktif.
+- Recovery melanjutkan checkpoint per 10 saham tanpa mengulang seluruh IDX.
+- Force Stop tetap menghentikan alarm dan service sampai aplikasi dibuka lagi.
 
-## Ringkasan keputusan 1.6.12
+## Scanner, portofolio, dan keputusan
 
 - Scanner Android dijadwalkan sekitar 12.15 dan 16.30 pada hari bursa.
 - Jadwal tetap dapat membangunkan aplikasi setelah UI ditutup atau dihapus
@@ -49,7 +69,7 @@
 - Scanner memakai tombol vertikal yang lebih nyaman pada layar ponsel.
 - Loading overlay memblokir interaksi selama pengambilan data, analisis, penyimpanan, validasi, dan kalkulasi halaman.
 
-## Penyempurnaan UI 1.6.4
+## Antarmuka
 
 - Satu design system untuk card, tombol, bantuan, ukuran teks, dan pagination.
 - Dashboard menampilkan angka dan tindakan utama; detail dibuka dengan mengetuk card.
@@ -59,14 +79,14 @@
 - Pagination selalu memakai `Sebelumnya` dan `Berikutnya`.
 - Detail expandable dibuat tanpa memindahkan view antar-parent sehingga aman untuk Android.
 
-## Perbaikan 1.6.3
+## Stabilitas scanner
 
 - Memperbaiki crash Android `The specified child already has a parent`
   saat **Ambil / perbarui data** maupun **Analisis snapshot** dijalankan.
 - Pager proses teknis sekarang memakai satu container yang stabil dan tidak
   memasukkan ulang tombol yang masih terikat ke parent lama.
 
-## Baru di 1.6.2
+## Closing, shortlist, dan evaluasi
 
 - Closing dipilih otomatis: sesi 1 setelah midday close, sesi 2 setelah market
   close, dan hari bursa sebelumnya bila closing hari ini belum tersedia.
@@ -81,7 +101,7 @@
   outcome, dan metadata walk-forward strategi aktif.
 - Log teknis menyimpan 200 event serta memiliki filter dan pagination.
 
-## Baru di 1.6.1
+## Snapshot dan transaksi
 
 - Scanner memisahkan pengambilan data internet dari analisis strategi.
 - Snapshot dapat dianalisis ulang setelah strategi hasil training diimpor,
@@ -93,7 +113,7 @@
 - Penjelasan utama dipindahkan ke tombol bantuan `?`.
 - Bahasa Indonesia dan English dapat dipilih dari Pengaturan.
 
-## Baru di 1.6.0
+## Build dan trainer
 
 - Versi aplikasi dan build number tampil di Pengaturan dan berasal dari APK.
 - Startup tidak lagi menulis ulang seluruh state jika tidak ada migrasi.
@@ -110,7 +130,7 @@
 - APK memvalidasi jumlah fold/trade out-of-sample dan menampilkan win rate
   serta maximum drawdown artefak training.
 
-## Baru di 1.5.8
+## Worker dan reset
 
 - Scanner berjalan penuh pada worker thread Android untuk mencegah `NetworkOnMainThreadException`.
 - Tombol Stop menghentikan scan dengan aman dan mempertahankan checkpoint.
@@ -119,7 +139,7 @@
 - Dialog konfirmasi, informasi, serta input utama memakai modal visual StockMate.
 - Empty state dan surface diperbarui agar layar kosong tetap terlihat matang.
 
-## Perubahan 1.5.7
+## Rekonsiliasi portofolio
 
 - Migrasi otomatis dari v1.5.6 dan Sync Up ulang tanpa menghapus data.
 - Invested/modal, nilai pasar, unrealized, kas, dan total equity dipisahkan.
@@ -137,7 +157,7 @@
 - Realized dihitung ulang setelah seluruh cost basis lengkap. Sync Up tidak
   dapat diselesaikan selama masih ada penjualan tanpa modal.
 
-## Perubahan dari 1.5.5
+## Universe IDX dan Sync Up
 
 - Scanner pada akhir pekan otomatis memakai closing hari bursa terakhir.
 - Universe fallback 99 tidak lagi dianggap sebagai full scan.
@@ -164,7 +184,7 @@
 - UI dan notifikasi menampilkan batch aktif, jumlah batch, saham aktif, progres total, berhasil, dan gagal.
 - Checkpoint tetap disimpan per saham dan setiap akhir batch agar proses dapat dilanjutkan.
 
-## Baru di 1.5.2
+## Impor e-Statement dan keputusan posisi
 
 - File history yang sama dapat diterapkan ulang untuk merekonsiliasi transaksi manual.
 - Setelah impor history, seluruh transaksi manual dinonaktifkan dari perhitungan portofolio dan dipindahkan ke arsip koreksi.
@@ -178,12 +198,12 @@
 - Keputusan posisi mencakup stop loss tetap, trailing stop beserta persentasenya, dan rencana take profit sebagian/penuh.
 - Tap kartu portofolio membuka halaman detail posisi dengan navigasi Back; Buy, Sell, dan pengaturan risiko tersedia di halaman tersebut.
 
-## Baru di 1.5.1
+## Kompatibilitas
 
 - Memperbaiki error inferensi LINQ saat mengekstrak teks PDF e-Statement.
 - Memperbaiki overload ambigu saat membuat notifikasi awal scanner.
 
-## Fitur dari 1.5.0
+## Fondasi aplikasi
 
 - Progres scan terstruktur: tahapan, simbol aktif, berhasil/gagal/total, persen, progress bar, dan progress numerik pada notifikasi Android.
 - Impor e-Statement PDF Stockbit sesuai format `Transaction History` (Trans Date, Due Date, Stock, Buy/Sell, Lot, Price, Buy/Sell Value, Sales Tax).
@@ -230,7 +250,7 @@ powershell -ExecutionPolicy Bypass -File .\Build-Release.ps1
 Pada build pertama script membuat `stockmate-release.keystore`, meminta
 password, melakukan publish `Release`, lalu menghasilkan:
 
-`artifacts\release\StockMate-v1.6.12-release.apk`
+`artifacts\release\StockMate-v0.7.0-release.apk`
 
 Jangan kehilangan keystore atau password. Android hanya menerima update dengan
 application ID dan signing key yang sama. Keystore sudah dikecualikan dari Git.
@@ -243,7 +263,7 @@ Untuk GitHub personal, push repository lalu simpan empat Actions secrets:
 - `ANDROID_KEYSTORE_PASSWORD`
 
 Workflow `.github/workflows/android-release.yml` berjalan manual atau saat tag
-seperti `v1.6.12` dipush.
+seperti `v0.7.0` dipush.
 
 ## Training strategi di komputer
 
@@ -387,10 +407,11 @@ delay, cache sesi, checkpoint, dan backoff. Endpoint gratis atau endpoint IDX
 dapat berubah; impor universe manual tetap dipertahankan sebagai jalur
 pemulihan.
 
-Data market gratis dapat terlambat atau tidak lengkap. Scanner teknikal tidak
-memasukkan semua berita, fundamental, corporate action, foreign flow, kondisi
-IHSG, atau likuiditas order book. Selalu cocokkan timestamp dan harga di
-Stockbit sebelum memasang order. Tidak ada hasil scan yang menjamin profit.
+Data market dan feed isu gratis dapat terlambat atau tidak lengkap. Analisis isu
+belum menggantikan pemeriksaan laporan keuangan, corporate action, foreign flow,
+kondisi IHSG, atau likuiditas order book. Selalu cocokkan sumber, timestamp, dan
+harga di Stockbit sebelum memasang order. Tidak ada hasil scan yang menjamin
+profit.
 
 ## Batas validasi paket
 
@@ -399,7 +420,8 @@ dan integritas ZIP diperiksa di lingkungan pembuatan paket. Toolchain .NET 10
 Android tidak tersedia di lingkungan tersebut, sehingga build final tetap
 harus divalidasi oleh `Setup-StockMate.ps1` atau Visual Studio pada komputer
 yang memiliki workload MAUI Android.
-## Catatan upgrade dari 1.5.9
+
+## Catatan upgrade
 
 Versi ini mendukung upgrade in-place. Gunakan `ApplicationId`
 `id.stockmate.personal` yang sama dan jangan uninstall aplikasi lama jika ingin
@@ -410,7 +432,7 @@ selama package ID dan signing debug yang dipakai tetap sama. Jika Android
 menolak update karena signature berbeda, jangan uninstall: gunakan kembali
 keystore/signing yang sama atau ekspor data dari versi lama terlebih dahulu.
 
-Perubahan 1.5.9:
+Fitur kompatibilitas yang tetap dipertahankan:
 
 - pagination, pencarian, filter, dan sorting pada Scanner dan Portofolio;
 - seluruh hasil universe tersimpan, bukan dipotong menjadi 15 kandidat;

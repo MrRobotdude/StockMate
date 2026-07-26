@@ -319,11 +319,11 @@ public sealed class ScanForegroundService : Service
                         "Checking market events, portfolio, and top candidates")
                 });
                 var count = eventIntel is null ? 0 : await eventIntel.RefreshAsync(ct);
-                var snapshot = engine.GetLatestSnapshot();
+                var eventSnapshot = engine.GetLatestSnapshot();
                 var recommendationMessage = Loc.T(
                     "Belum ada snapshot lengkap untuk memeriksa ulang rekomendasi.",
                     "There is no complete snapshot available to recheck recommendations.");
-                if (snapshot is { IsComplete: true })
+                if (eventSnapshot is { IsComplete: true })
                 {
                     UpdateNotification(new()
                     {
@@ -335,14 +335,14 @@ public sealed class ScanForegroundService : Service
                     var eventProgress =
                         new DirectProgress<ScanProgress>(UpdateNotification);
                     await engine.AnalyzeAsync(
-                        snapshot.Session == "LUNCH",
-                        snapshot,
+                        eventSnapshot.Session == "LUNCH",
+                        eventSnapshot,
                         true,
                         eventProgress,
                         ct);
                     var cancelled = data.State.ScanHistory
                         .LastOrDefault(x =>
-                            x.SessionKey == snapshot.SessionKey &&
+                            x.SessionKey == eventSnapshot.SessionKey &&
                             x.StrategyVersion == data.State.Strategy.Version)?
                         .Predictions.Count(x => x.Outcome == "CANCELLED") ?? 0;
                     recommendationMessage = Loc.T(
@@ -398,7 +398,7 @@ public sealed class ScanForegroundService : Service
                     {
                         await eventIntel.RefreshAsync(ct);
                     }
-                    catch (OperationCanceledException)
+                    catch (System.OperationCanceledException)
                     {
                         throw;
                     }

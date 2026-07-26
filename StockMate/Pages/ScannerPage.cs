@@ -454,14 +454,14 @@ public sealed class ScannerPage : ContentPage
             var isOwned = position is not null;
             var stack=new VerticalStackLayout { Spacing=8, Children=
             {
-                new Label { Text=$"Entry {r.EntryLow:N0}–{r.EntryHigh:N0}  •  maksimal {r.MaxBuyPrice:N0}", TextColor=Colors.White },
+                new Label { Text=$"Limit {r.EntryHigh:N0}  •  batal jika opening > {r.MaxBuyPrice:N0}", TextColor=Colors.White },
                 new Label { Text=$"Target {r.Target1:N0} / {r.Target2:N0}  •  Stop {r.StopLoss:N0}", TextColor=UiKit.Muted },
                 new Label
                 {
                     Text = isOwned && portfolioDecision is not null
                         ? $"Tindakan posisi: {portfolioDecision.Action} • keyakinan {portfolioDecision.Confidence}"
                         : r.SuggestedLots > 0
-                        ? $"Rencana: {r.SuggestedLots} lot @ {r.EntryLow:N0}–{r.EntryHigh:N0}"
+                        ? $"Rencana: {r.SuggestedLots} lot @ limit {r.EntryHigh:N0}"
                         : "Tidak dapat dieksekusi: ukuran aman 0 lot",
                     TextColor = isOwned
                         ? ActionColor(portfolioDecision?.Action)
@@ -501,11 +501,11 @@ public sealed class ScannerPage : ContentPage
                         $"Position {position!.Lots} lots · {portfolioDecision.Confidence} confidence")
                     : r.SuggestedLots > 0
                     ? Loc.T(
-                        $"Beli ideal Rp {r.EntryLow:N0}–{r.EntryHigh:N0} · {r.SuggestedLots} lot",
-                        $"Ideal buy Rp {r.EntryLow:N0}–{r.EntryHigh:N0} · {r.SuggestedLots} lots")
+                        $"Limit Rp {r.EntryHigh:N0} · {r.SuggestedLots} lot",
+                        $"Limit Rp {r.EntryHigh:N0} · {r.SuggestedLots} lots")
                     : Loc.T(
-                        $"Pantau area Rp {r.EntryLow:N0}–{r.EntryHigh:N0}",
-                        $"Watch Rp {r.EntryLow:N0}–{r.EntryHigh:N0}"),
+                        $"Pantau harga Rp {r.EntryHigh:N0}",
+                        $"Watch Rp {r.EntryHigh:N0}"),
                 stack,
                 isOwned && portfolioDecision is not null
                     ? portfolioDecision.Confidence

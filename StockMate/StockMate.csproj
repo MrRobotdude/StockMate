@@ -35,8 +35,8 @@
 		<ApplicationId>id.stockmate.personal</ApplicationId>
 
 		<!-- Versions -->
-		<ApplicationDisplayVersion>0.7.0</ApplicationDisplayVersion>
-		<ApplicationVersion>32</ApplicationVersion>
+		<ApplicationDisplayVersion>0.7.1</ApplicationDisplayVersion>
+		<ApplicationVersion>33</ApplicationVersion>
 
 		<!-- To develop, package, and publish an app to the Microsoft Store, see: https://aka.ms/MauiTemplateUnpackaged -->
 		<WindowsPackageType>None</WindowsPackageType>

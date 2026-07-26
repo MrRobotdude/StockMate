@@ -171,7 +171,7 @@ public sealed class DashboardPage : ContentPage
                 EntryHigh = d.EntryHigh,
                 ReferencePrice = d.ReferencePrice,
                 Detail = d.SuggestedLots > 0
-                    ? $"{d.Reason} {d.SuggestedLots} lot di {d.EntryLow:N0}–{d.EntryHigh:N0}."
+                    ? $"{d.Reason} {d.SuggestedLots} lot dengan limit {d.EntryHigh:N0}."
                     : d.Reason,
                 RiskDetail = $"{d.RiskAction} {d.TakeProfitAction}",
                 Stop = d.StopLoss, Target = d.Target,
@@ -200,7 +200,7 @@ public sealed class DashboardPage : ContentPage
                 EntryHigh = scan.EntryHigh,
                 ReferencePrice = scan.LastPrice,
                 Detail = lots > 0
-                    ? $"{lots} lot di Rp {scan.EntryLow:N0}–{scan.EntryHigh:N0}; maksimal Rp {scan.MaxBuyPrice:N0}. " +
+                    ? $"{lots} lot dengan limit Rp {scan.EntryHigh:N0}; batal jika opening di atas Rp {scan.MaxBuyPrice:N0}. " +
                       $"Teknikal {scan.Score}/100, isu {eventView.Adjustment:+#;-#;0}."
                     : Loc.T("Setup lolos, tetapi kas belum cukup.", "Setup passed, but cash is insufficient."),
                 RiskDetail = $"Risk/reward {scan.RiskReward:N2}. {eventView.Summary}",
@@ -214,8 +214,8 @@ public sealed class DashboardPage : ContentPage
     {
         if (item.SuggestedLots > 0)
             return Loc.T(
-                $"Beli Rp {item.EntryLow:N0}–{item.EntryHigh:N0} · {item.SuggestedLots} lot",
-                $"Buy Rp {item.EntryLow:N0}–{item.EntryHigh:N0} · {item.SuggestedLots} lots");
+                $"Limit Rp {item.EntryHigh:N0} · {item.SuggestedLots} lot",
+                $"Limit Rp {item.EntryHigh:N0} · {item.SuggestedLots} lots");
 
         if (item.Action.Contains("SELL") || item.Action.Contains("REDUCE") ||
             item.Action.Contains("JUAL") || item.Action.Contains("TAKE PROFIT"))

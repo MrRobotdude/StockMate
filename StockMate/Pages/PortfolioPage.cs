@@ -192,8 +192,8 @@ public sealed class PortfolioPage : ContentPage
     {
         if (decision.SuggestedLots > 0)
             return Loc.T(
-                $"Rencana: {decision.Action}, {decision.SuggestedLots} lot di Rp {decision.EntryLow:N0}–{decision.EntryHigh:N0}.",
-                $"Plan: {decision.Action}, {decision.SuggestedLots} lots at Rp {decision.EntryLow:N0}–{decision.EntryHigh:N0}.");
+                $"Rencana: {decision.Action}, {decision.SuggestedLots} lot dengan limit Rp {decision.EntryHigh:N0}.",
+                $"Plan: {decision.Action}, {decision.SuggestedLots} lots with a Rp {decision.EntryHigh:N0} limit.");
         return Loc.T(
             $"Rencana: {decision.Action} pada harga acuan Rp {decision.ReferencePrice:N0}.",
             $"Plan: {decision.Action} at reference price Rp {decision.ReferencePrice:N0}.");

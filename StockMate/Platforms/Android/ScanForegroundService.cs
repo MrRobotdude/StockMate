@@ -36,7 +36,7 @@ public static class ScanServiceBridge
 
     public static Task<bool> StartAsync(bool intraday, bool forceRefresh, bool downloadOnly = false)
     {
-        if (IsRunning) return _completion?.Task ?? Task.FromResult(false);
+        if (IsRunning) return _completion?.Task ?? WaitForCurrentRunAsync();
         _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         var context = global::Android.App.Application.Context;
         var intent = new Intent(context, typeof(ScanForegroundService));
@@ -46,6 +46,13 @@ public static class ScanServiceBridge
         if (Build.VERSION.SdkInt >= BuildVersionCodes.O) context.StartForegroundService(intent);
         else context.StartService(intent);
         return _completion.Task;
+    }
+
+    static async Task<bool> WaitForCurrentRunAsync()
+    {
+        while (IsRunning)
+            await Task.Delay(500);
+        return CurrentProgress.Stage == "COMPLETE";
     }
 
     public static void Stop()
@@ -142,9 +149,12 @@ public static class ScanServiceBridge
 public sealed class ScanForegroundService : Service
 {
     internal const string StopAction = "stockmate.action.STOP_SCAN";
-    const string ChannelId = "stockmate_scanner";
+    const string ProgressChannelId = "stockmate_scanner_progress_v2";
+    const string ResultChannelId = "stockmate_scanner_result_v2";
     const int NotificationId = 1401;
+    const int ResultNotificationId = 1402;
     CancellationTokenSource? _cts;
+    PowerManager.WakeLock? _wakeLock;
 
     public override IBinder? OnBind(Intent? intent) => null;
 
@@ -155,10 +165,11 @@ public sealed class ScanForegroundService : Service
             _cts?.Cancel();
             return StartCommandResult.NotSticky;
         }
-        if (ScanServiceBridge.IsRunning) return StartCommandResult.NotSticky;
+        if (ScanServiceBridge.IsRunning) return StartCommandResult.Sticky;
         ScanServiceBridge.IsRunning = true;
         _cts = new();
         CreateChannel();
+        AcquireWakeLock();
         StartForeground(NotificationId, BuildNotification("Menyiapkan scanner…"));
         var intraday = intent?.GetBooleanExtra("intraday", false) ?? false;
         var force = intent?.GetBooleanExtra("force", false) ?? false;
@@ -168,7 +179,10 @@ public sealed class ScanForegroundService : Service
         // A Service starts on Android's main looper. Run the complete network
         // pipeline on a worker so no handler can perform network I/O on it.
         _ = Task.Run(() => RunAsync(intraday, force, scheduled, downloadOnly, eventOnly, _cts.Token), _cts.Token);
-        return StartCommandResult.NotSticky;
+        // If Android kills the process under memory pressure, redeliver the
+        // original intent. The download pipeline is idempotent and reuses its
+        // cache/checkpoint, so a restarted run continues safely.
+        return StartCommandResult.RedeliverIntent;
     }
 
     async Task RunAsync(
@@ -275,6 +289,7 @@ public sealed class ScanForegroundService : Service
 #pragma warning disable CS0618
                 StopForeground(false);
 #pragma warning restore CS0618
+            ReleaseWakeLock();
             StopSelf();
         }
     }
@@ -295,29 +310,38 @@ public sealed class ScanForegroundService : Service
 
     Notification BuildNotification(ScanProgress progress)
     {
-        var builder = new NotificationCompat.Builder(this, ChannelId)
+        var builder = new NotificationCompat.Builder(this, ProgressChannelId)
             .SetContentTitle("StockMate sedang mengambil data")
             .SetContentText(progress.DisplayText)
+            .SetStyle(new NotificationCompat.BigTextStyle().BigText(progress.DisplayText))
             .SetSmallIcon(Resource.Mipmap.appicon)
             .SetContentIntent(BuildContentIntent())
-            .SetOnlyAlertOnce(true).SetOngoing(true);
+            .AddAction(0, "Hentikan", BuildStopIntent())
+            .SetCategory(NotificationCompat.CategoryProgress)
+            .SetPriority(NotificationCompat.PriorityDefault)
+            .SetOnlyAlertOnce(true)
+            .SetOngoing(true);
         builder.SetProgress(progress.Total, progress.Completed, progress.IsIndeterminate);
         return builder.Build() ?? throw new InvalidOperationException("Notifikasi foreground gagal dibuat.");
     }
 
     void PublishFinalNotification(string title, string text)
     {
-        var notification = new NotificationCompat.Builder(this, ChannelId)
+        NotificationManagerCompat.From(this).Cancel(NotificationId);
+        var notification = new NotificationCompat.Builder(this, ResultChannelId)
             .SetContentTitle(title)
             .SetContentText(text)
             .SetStyle(new NotificationCompat.BigTextStyle().BigText(text))
             .SetSmallIcon(Resource.Mipmap.appicon)
             .SetContentIntent(BuildContentIntent())
+            .SetCategory(NotificationCompat.CategoryStatus)
+            .SetPriority(NotificationCompat.PriorityHigh)
+            .SetDefaults((int)(NotificationDefaults.Sound | NotificationDefaults.Vibrate))
             .SetOngoing(false)
             .SetAutoCancel(true)
             .Build();
         if (notification is not null)
-            NotificationManagerCompat.From(this).Notify(NotificationId, notification);
+            NotificationManagerCompat.From(this).Notify(ResultNotificationId, notification);
     }
 
     PendingIntent BuildContentIntent()
@@ -328,18 +352,69 @@ public sealed class ScanForegroundService : Service
             PendingIntentFlags.UpdateCurrent | PendingIntentFlags.Immutable)!;
     }
 
+    PendingIntent BuildStopIntent()
+    {
+        var intent = new Intent(this, typeof(ScanForegroundService))
+            .SetAction(StopAction);
+        return PendingIntent.GetService(this, 1403, intent,
+            PendingIntentFlags.UpdateCurrent | PendingIntentFlags.Immutable)!;
+    }
+
     void CreateChannel()
     {
         if (Build.VERSION.SdkInt < BuildVersionCodes.O) return;
         var manager = (NotificationManager)GetSystemService(NotificationService)!;
-        manager.CreateNotificationChannel(new NotificationChannel(
-            ChannelId, "StockMate Scanner", NotificationImportance.Low));
+        var progress = new NotificationChannel(
+            ProgressChannelId, "Progres pengambilan data", NotificationImportance.Default)
+        {
+            Description = "Progres aktif saat StockMate mengambil dan menganalisis data pasar"
+        };
+        progress.EnableVibration(true);
+        var result = new NotificationChannel(
+            ResultChannelId, "Hasil proses StockMate", NotificationImportance.High)
+        {
+            Description = "Pemberitahuan saat pengambilan data selesai atau gagal"
+        };
+        result.EnableVibration(true);
+        manager.CreateNotificationChannel(progress);
+        manager.CreateNotificationChannel(result);
+    }
+
+    void AcquireWakeLock()
+    {
+        try
+        {
+            var manager = (PowerManager?)GetSystemService(PowerService);
+            _wakeLock = manager?.NewWakeLock(
+                WakeLockFlags.Partial, $"{PackageName}:StockMateDataSync");
+            _wakeLock?.SetReferenceCounted(false);
+            _wakeLock?.Acquire(2 * 60 * 60 * 1000L);
+        }
+        catch
+        {
+            _wakeLock = null;
+        }
+    }
+
+    void ReleaseWakeLock()
+    {
+        try
+        {
+            if (_wakeLock?.IsHeld == true) _wakeLock.Release();
+        }
+        catch { }
+        finally
+        {
+            _wakeLock?.Dispose();
+            _wakeLock = null;
+        }
     }
 
     public override void OnDestroy()
     {
         _cts?.Cancel();
         _cts?.Dispose();
+        ReleaseWakeLock();
         base.OnDestroy();
     }
 }

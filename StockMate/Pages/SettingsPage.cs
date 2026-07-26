@@ -67,7 +67,7 @@ public sealed class SettingsPage : ContentPage
             Children =
             {
                 new Label { Text = "Scan closing otomatis", TextColor = Colors.White },
-                UiKit.Sub("Cek 12.15 & 16.30 • retry 10 menit bila data belum tersedia")
+                UiKit.Sub("Tarik 07.00 • cek 12.15 & 16.30 • retry bila closing belum siap")
             }
         }, 0);
         autoRow.Add(_autoScan, 1);
@@ -87,6 +87,10 @@ public sealed class SettingsPage : ContentPage
         var exactAlarm = UiKit.Secondary("Izinkan jadwal presisi Android");
         exactAlarm.Clicked += (_, _) =>
             BackgroundScanScheduler.OpenExactAlarmSettings(Android.App.Application.Context);
+        var batterySettings = UiKit.Secondary("Atur penggunaan baterai background");
+        batterySettings.Clicked += (_, _) =>
+            BackgroundScanScheduler.OpenBatteryOptimizationSettings(
+                Android.App.Application.Context);
         var notificationSettings = UiKit.Secondary("Periksa notifikasi progres");
         notificationSettings.Clicked += (_, _) =>
             ScanServiceBridge.OpenNotificationSettings();
@@ -101,10 +105,11 @@ public sealed class SettingsPage : ContentPage
                     autoRow,
                     eventRow,
                     exactAlarm,
+                    batterySettings,
                     notificationSettings,
                     UiKit.Sub(Loc.T(
-                        "Android akan membangunkan StockMate sekitar 12.15 dan 16.30 pada hari bursa. Jika closing belum siap, aplikasi menjadwalkan pemeriksaan ulang. Download panjang memakai notifikasi foreground. Force Stop tetap menghentikan seluruh pekerjaan sampai aplikasi dibuka kembali.",
-                        "Android wakes StockMate around 12:15 and 16:30 on trading days. If closing is not ready, another check is scheduled. Long downloads use a foreground notification. Force Stop still blocks all work until the app is opened again."))
+                        "Android akan menarik data mulai sekitar 07.00, lalu mengecek lagi 12.15 dan 16.30 pada hari bursa. Progres tetap tampil di notification bar dan hasil akhir berbunyi. Matikan optimasi baterai untuk reliabilitas terbaik. Force Stop tetap menghentikan seluruh pekerjaan sampai aplikasi dibuka kembali.",
+                        "Android starts the data pull around 07:00, then checks again at 12:15 and 16:30 on trading days. Progress stays visible in the notification bar and completion alerts with sound. Disable battery optimization for best reliability. Force Stop still blocks all work until the app is opened again."))
                 }
             }));
         root.Children.Add(UiKit.ExpandableCard(

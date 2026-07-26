@@ -96,8 +96,8 @@ public sealed class PositionDetailPage : ContentPage
                     MetricLine("Skor teknikal", $"{decision.TechnicalScore}/100"),
                     MetricLine("Penyesuaian isu", $"{decision.EventAdjustment:+#;-#;0}"),
                     MetricLine("Skor gabungan", $"{decision.Score}/100"),
-                    MetricLine("Area tambah", $"Rp {decision.EntryLow:N0}–{decision.EntryHigh:N0}"),
-                    MetricLine("Batas harga beli", $"Rp {decision.MaxBuyPrice:N0}"),
+                    MetricLine("Harga limit order", $"Rp {decision.EntryHigh:N0}"),
+                    MetricLine("Batal jika opening di atas", $"Rp {decision.MaxBuyPrice:N0}"),
                     MetricLine("Jumlah tambah", decision.SuggestedLots > 0
                         ? $"{decision.SuggestedLots} lot"
                         : "0 lot — jangan eksekusi"),
@@ -173,15 +173,16 @@ public sealed class PositionDetailPage : ContentPage
         _root.Children.Add(UiKit.ExpandableCard(
             scan.Verdict,
             scan.SuggestedLots > 0
-                ? $"Beli ideal Rp {scan.EntryLow:N0}–{scan.EntryHigh:N0} · {scan.SuggestedLots} lot"
-                : $"Pantau Rp {scan.EntryLow:N0}–{scan.EntryHigh:N0}",
+                ? $"Limit Rp {scan.EntryHigh:N0} · {scan.SuggestedLots} lot"
+                : $"Pantau harga Rp {scan.EntryHigh:N0}",
             new VerticalStackLayout
             {
                 Spacing = 8,
                 Children =
                 {
                     MetricLine("Harga snapshot", $"Rp {scan.LastPrice:N0}"),
-                    MetricLine("Batas maksimal beli", $"Rp {scan.MaxBuyPrice:N0}"),
+                    MetricLine("Harga limit order", $"Rp {scan.EntryHigh:N0}"),
+                    MetricLine("Batal jika opening di atas", $"Rp {scan.MaxBuyPrice:N0}"),
                     MetricLine("Dana dialokasikan", $"Rp {scan.AllocatedCash:N0}"),
                     MetricLine("Stop loss", $"Rp {scan.StopLoss:N0}"),
                     MetricLine("Target 1", $"Rp {scan.Target1:N0}"),

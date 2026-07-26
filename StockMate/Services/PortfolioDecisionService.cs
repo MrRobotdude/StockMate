@@ -41,13 +41,13 @@ public sealed class PortfolioDecisionService(
             if (scan is not null && p.LastPrice <= scan.StopLoss)
                 action = "SELL ALL / CUT LOSS";
             else if (scan is not null && score < 55)
-                action = p.ProfitLossPercent < -5 ? "SELL ALL / CUT LOSS" : "REDUCE 30-50%";
+                action = p.ProfitLossPercent < -5 ? "SELL ALL / CUT LOSS" : "REDUCE 50%";
             else if (scan is not null && p.LastPrice >= scan.Target1)
-                action = "TAKE PROFIT 30-50%";
+                action = "TAKE PROFIT 50%";
             else if (scan is not null && score >= data.State.Strategy.BuyScore && weight < 0.20m &&
                      p.LastPrice <= scan.MaxBuyPrice)
             {
-                action = p.ProfitLossPercent < 0 ? "AVERAGE DOWN BERTAHAP" : "ADD BERTAHAP";
+                action = p.ProfitLossPercent < 0 ? "AVERAGE DOWN" : "ADD";
                 lots = Math.Max(0, Math.Min(scan.SuggestedLots,
                     (int)Math.Floor(Math.Max(0, data.State.Cash * 0.25m) / Math.Max(1, p.LastPrice * 100))));
                 if (lots == 0)
@@ -109,9 +109,9 @@ public sealed class PortfolioDecisionService(
         if (action.Contains("SELL ALL"))
             return "Eksekusi cut loss; jangan menunggu trailing stop.";
         if (action.Contains("TAKE PROFIT"))
-            return "Jual sebagian di target, lalu lindungi sisa dengan trailing stop.";
+            return "Jual tepat 50% posisi (dibulatkan ke atas ke lot utuh), lalu lindungi sisanya dengan trailing stop.";
         if (action.Contains("REDUCE"))
-            return "Kurangi posisi sekarang; pasang stop loss tetap untuk sisa posisi.";
+            return "Kurangi tepat 50% posisi (dibulatkan ke atas ke lot utuh); pasang stop loss tetap untuk sisanya.";
         if (scan is null || scan.StopLoss <= 0)
             return "Belum ada level valid; jangan menambah sebelum scan lengkap.";
         if (position.ProfitLossPercent >= 5)
@@ -131,9 +131,9 @@ public sealed class PortfolioDecisionService(
     {
         if (scan is null || scan.Target1 <= 0) return "Target belum valid.";
         if (action.Contains("TAKE PROFIT"))
-            return $"Take profit 30–50% sekarang/dekat {scan.Target1:N0}; sisanya arahkan ke {scan.Target2:N0}.";
+            return $"Jual 50% posisi tepat di {scan.Target1:N0}; target sisa posisi {scan.Target2:N0}.";
         if (action.Contains("SELL ALL"))
             return "Target profit dibatalkan karena skenario cut loss aktif.";
-        return $"Rencana take profit 30–50% di {scan.Target1:N0}; sisa posisi di {scan.Target2:N0}.";
+        return $"Rencana jual 50% posisi tepat di {scan.Target1:N0}; target sisa posisi {scan.Target2:N0}.";
     }
 }

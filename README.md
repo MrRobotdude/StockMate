@@ -1,4 +1,4 @@
-# StockMate 0.7.0
+# StockMate 0.7.1
 
 StockMate masih berada pada tahap pengembangan awal. Nomor versi publik memakai
 format `0.MINOR.PATCH`: fitur yang sudah stabil untuk satu milestone digabung
@@ -18,6 +18,8 @@ menyatakan keputusan tetap berbasis teknikal dan tidak mengarang sentimen.
 
 ### Background scanner yang lebih tahan
 
+- Penarikan data pagi dijadwalkan sekitar 07.00 WIB pada hari bursa agar
+  snapshot sudah siap sebelum sesi pra-pembukaan.
 - Ambil/perbarui data manual memakai foreground service yang sama dengan scan
   terjadwal, sehingga proses tidak bergantung pada halaman Scanner tetap buka.
 - Notifikasi progres tetap tersedia ketika UI ditutup dan meninggalkan status
@@ -26,13 +28,16 @@ menyatakan keputusan tetap berbasis teknikal dan tidak mengarang sentimen.
 - Pengaturan Background scanner menyediakan tombol untuk memeriksa izin dan
   channel notifikasi progres Android.
 - Android dapat mengirim ulang pekerjaan bila service direklamasi sistem.
-- CPU dan Wi-Fi lock dipakai hanya selama pekerjaan aktif.
+- CPU wake lock dipakai maksimal dua jam dan dilepas segera setelah pekerjaan selesai.
+- Channel progres berprioritas normal; hasil selesai/gagal memakai channel
+  terpisah berprioritas tinggi dengan suara dan getaran.
+- Notifikasi aktif menyediakan tombol `Hentikan` tanpa harus membuka aplikasi.
 - Recovery melanjutkan checkpoint per 10 saham tanpa mengulang seluruh IDX.
 - Force Stop tetap menghentikan alarm dan service sampai aplikasi dibuka lagi.
 
 ## Scanner, portofolio, dan keputusan
 
-- Scanner Android dijadwalkan sekitar 12.15 dan 16.30 pada hari bursa.
+- Scanner Android dijadwalkan sekitar 07.00, 12.15, dan 16.30 pada hari bursa.
 - Jadwal tetap dapat membangunkan aplikasi setelah UI ditutup atau dihapus
   dari recent apps, selama aplikasi tidak di-Force Stop oleh Android/pengguna.
 - Bila data closing belum lengkap, pemeriksaan diulang otomatis 10 menit
@@ -55,8 +60,9 @@ menyatakan keputusan tetap berbasis teknikal dan tidak mengarang sentimen.
 - Loading proses memakai modal seluruh layar yang menutup tab menu dan menolak
   tombol Back sampai operasi selesai.
 
-- Dashboard menampilkan area harga dan jumlah lot pada subtitle rekomendasi.
-- Scanner menampilkan harga beli ideal dan lot tanpa mengekspos skor internal.
+- Dashboard menampilkan satu harga limit dan jumlah lot pasti pada subtitle rekomendasi.
+- Scanner menampilkan satu harga beli, lot, batas pembatalan, stop, dan target
+  tanpa memberi rentang eksekusi.
 - Kartu portofolio menampilkan tindakan dan tingkat keyakinan sejak kondisi tertutup.
 - Alasan, risiko, target, dan stop tetap tersedia ketika kartu dibuka.
 

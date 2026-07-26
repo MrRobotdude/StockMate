@@ -9,6 +9,7 @@ namespace StockMate.Platforms.Android;
 [SupportedOSPlatform("android")]
 public static class BackgroundScanScheduler
 {
+    const int MorningRequest = 700;
     const int LunchRequest = 1215;
     const int EveningRequest = 1630;
     const int OpeningEventsRequest = 845;
@@ -16,6 +17,9 @@ public static class BackgroundScanScheduler
 
     public static void ScheduleDaily(Context context)
     {
+        // Morning pull uses yesterday's completed candle so recommendations
+        // can be ready before IDX pre-opening.
+        ScheduleSession(context, MorningRequest, 7, 0, false, downloadOnly: true);
         ScheduleSession(context, LunchRequest, 12, 15, true);
         ScheduleSession(context, EveningRequest, 16, 30, false);
         ScheduleSession(context, OpeningEventsRequest, 8, 45, false, eventOnly: true);
@@ -37,8 +41,23 @@ public static class BackgroundScanScheduler
         context.StartActivity(intent);
     }
 
+    public static void OpenBatteryOptimizationSettings(Context context)
+    {
+        try
+        {
+            context.StartActivity(new Intent(Settings.ActionIgnoreBatteryOptimizationSettings)
+                .AddFlags(ActivityFlags.NewTask));
+        }
+        catch (ActivityNotFoundException)
+        {
+            context.StartActivity(new Intent(Settings.ActionSettings)
+                .AddFlags(ActivityFlags.NewTask));
+        }
+    }
+
     public static void CancelDaily(Context context)
     {
+        Cancel(context, MorningRequest);
         Cancel(context, LunchRequest);
         Cancel(context, EveningRequest);
         Cancel(context, RetryRequest);
@@ -56,7 +75,7 @@ public static class BackgroundScanScheduler
 
     static void ScheduleSession(
         Context context, int requestCode, int hour, int minute, bool intraday,
-        bool eventOnly = false)
+        bool eventOnly = false, bool downloadOnly = false)
     {
         var alarm = (AlarmManager?)context.GetSystemService(Context.AlarmService);
         if (alarm is null) return;
@@ -65,17 +84,20 @@ public static class BackgroundScanScheduler
         while (next.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday)
             next = next.AddDays(1);
         var trigger = new DateTimeOffset(next).ToUnixTimeMilliseconds();
-        var pending = CreatePendingIntent(context, requestCode, intraday, false, eventOnly);
+        var pending = CreatePendingIntent(
+            context, requestCode, intraday, false, eventOnly, downloadOnly);
         SetAlarm(alarm, trigger, pending);
     }
 
     static PendingIntent CreatePendingIntent(
-        Context context, int requestCode, bool intraday, bool retry, bool eventOnly = false)
+        Context context, int requestCode, bool intraday, bool retry,
+        bool eventOnly = false, bool downloadOnly = false)
     {
         var intent = new Intent(context, typeof(BackgroundScanAlarmReceiver))
             .PutExtra("intraday", intraday)
             .PutExtra("retry", retry)
-            .PutExtra("eventOnly", eventOnly);
+            .PutExtra("eventOnly", eventOnly)
+            .PutExtra("downloadOnly", downloadOnly);
         return PendingIntent.GetBroadcast(context, requestCode, intent,
             PendingIntentFlags.UpdateCurrent | PendingIntentFlags.Immutable)!;
     }
@@ -110,12 +132,14 @@ public sealed class BackgroundScanAlarmReceiver : BroadcastReceiver
         if (context is null) return;
         var intraday = intent?.GetBooleanExtra("intraday", false) ?? false;
         var eventOnly = intent?.GetBooleanExtra("eventOnly", false) ?? false;
+        var downloadOnly = intent?.GetBooleanExtra("downloadOnly", false) ?? false;
         BackgroundScanScheduler.ScheduleDaily(context);
         var service = new Intent(context, typeof(ScanForegroundService))
             .PutExtra("intraday", intraday)
             .PutExtra("force", false)
             .PutExtra("scheduled", true)
-            .PutExtra("eventOnly", eventOnly);
+            .PutExtra("eventOnly", eventOnly)
+            .PutExtra("downloadOnly", downloadOnly);
         if (Build.VERSION.SdkInt >= BuildVersionCodes.O)
             context.StartForegroundService(service);
         else

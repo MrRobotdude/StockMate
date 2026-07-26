@@ -35,7 +35,7 @@ public sealed class AppState
     public List<EventInsight> EventInsights { get; set; } = [];
     public bool AutoEventIntelligence { get; set; } = true;
     public DateTime? EventIntelligenceUpdatedAt { get; set; }
-    // Scheduled by Android at 12:15 and 16:30 WIB. This is deliberately
+    // Scheduled by Android at 07:00, 12:15 and 16:30 WIB. This is deliberately
     // independent from opening the Scanner page.
     public bool AutoScanAfterClose { get; set; } = true;
     public int RequestDelayMilliseconds { get; set; } = 750;

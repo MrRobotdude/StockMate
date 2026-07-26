@@ -644,7 +644,9 @@ public sealed class ScanEngine(MarketDataService market, AppDataService data, Un
                     : score >= data.State.Strategy.WatchScore ? "WATCH" : "WAIT",
             Score = score,
             LastPrice = RoundPrice(last.Close),
-            EntryLow = RoundPrice(Math.Min(last.Close, sma20)),
+            // One executable limit price, not a range. Keeping both legacy
+            // fields equal preserves existing saved-data compatibility.
+            EntryLow = RoundPrice(last.Close + atr * .25m),
             EntryHigh = RoundPrice(last.Close + atr * .25m),
             MaxBuyPrice = RoundPrice(last.Close + atr * .5m),
             StopLoss = stop,

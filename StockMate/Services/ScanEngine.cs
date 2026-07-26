@@ -1,8 +1,11 @@
 using StockMate.Models;
+using StockMate.Ui;
 
 namespace StockMate.Services;
 
-public sealed class ScanEngine(MarketDataService market, AppDataService data, UniverseService universe)
+public sealed class ScanEngine(
+    MarketDataService market, AppDataService data, UniverseService universe,
+    EventIntelligenceService events)
 {
     public int UniverseCount => universe.Symbols.Count;
 
@@ -12,8 +15,25 @@ public sealed class ScanEngine(MarketDataService market, AppDataService data, Un
         return $"{session.TradingDate:yyyy-MM-dd}-{(session.Intraday ? "S1" : "S2")}";
     }
 
-    public MarketSnapshot? GetSnapshot(bool intraday) =>
-        data.State.MarketSnapshots.LastOrDefault(x => x.SessionKey == GetSessionKey(intraday));
+    public MarketSnapshot? GetSnapshot(bool intraday)
+    {
+        var session = ResolveSession(intraday, DateTime.Now);
+        var exactKey =
+            $"{session.TradingDate:yyyy-MM-dd}-{(session.Intraday ? "S1" : "S2")}";
+        var exact = data.State.MarketSnapshots.LastOrDefault(
+            x => x.SessionKey == exactKey);
+        if (exact is not null || !session.IsPreviousTradingDay)
+            return exact;
+
+        // On an IDX holiday, the previous calendar weekday may have no candle.
+        // Fall back to the latest completed S2 snapshot on or before that date.
+        return data.State.MarketSnapshots
+            .Where(x => x.Session == "EVENING" &&
+                        x.TradingDate <= session.TradingDate)
+            .OrderByDescending(x => x.TradingDate)
+            .ThenByDescending(x => x.CapturedAt)
+            .FirstOrDefault();
+    }
 
     public bool UseLatestClosing(DateTime? value = null)
     {
@@ -44,11 +64,15 @@ public sealed class ScanEngine(MarketDataService market, AppDataService data, Un
             });
             var refreshed = await universe.EnsureCurrentAsync(true, ct, progress);
             if (!universe.HasFullUniverse)
-                throw new InvalidOperationException(
+                throw new InvalidOperationException(Loc.T(
                     $"Master universe belum lengkap ({data.State.MarketUniverse.Count} saham tersimpan). " +
-                    "Pembaruan IDX gagal. Buka Atur > Perbarui master IDX atau impor file universe; scanner tidak menjalankan fallback 99.");
+                    "Pembaruan IDX gagal. Buka Atur > Perbarui master IDX atau impor file universe; scanner tidak menjalankan fallback 99.",
+                    $"The master universe is incomplete ({data.State.MarketUniverse.Count} saved stocks). " +
+                    "The IDX update failed. Open Settings > Update IDX master or import a universe file; the scanner will not use the 99-stock fallback."));
         }
         var session = ResolveSession(intraday, DateTime.Now);
+        session = await ResolveAvailablePreviousCloseAsync(
+            session, ct);
         var knownTotal = universe.Symbols
             .Where(x => data.State.IncludeSpeculative || !universe.IsSpeculative(x))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -86,7 +110,8 @@ public sealed class ScanEngine(MarketDataService market, AppDataService data, Un
         });
         await WaitForClosingAsync(session, progress, ct, requireVerifiedClosing);
 
-        var key = GetSessionKey(intraday);
+        var key =
+            $"{session.TradingDate:yyyy-MM-dd}-{(session.Intraday ? "S1" : "S2")}";
         var cached = data.State.MarketSnapshots.LastOrDefault(x => x.SessionKey == key);
         if (cached?.IsComplete == true && cached.FailedSymbols.Count == 0 &&
             cached.RequestedCount == knownTotal && !force) return cached;
@@ -171,7 +196,19 @@ public sealed class ScanEngine(MarketDataService market, AppDataService data, Un
                         TechnicalDetail = "HTTP chart request • timeout 20 detik"
                     });
                     var candles = await GetWithRetryAsync(symbol, session.Intraday, progress, ct);
-                    candles = candles.Where(x => x.Time.Date <= session.TradingDate.Date).ToList();
+                    var sessionOneClose = session.TradingDate.Date.Add(
+                        session.TradingDate.DayOfWeek == DayOfWeek.Friday
+                            ? new TimeSpan(11, 30, 0)
+                            : new TimeSpan(12, 0, 0));
+                    candles = candles.Where(x =>
+                    {
+                        if (x.Time.Date > session.TradingDate.Date)
+                            return false;
+                        if (!session.Intraday ||
+                            x.Time.Date < session.TradingDate.Date)
+                            return true;
+                        return x.Time <= sessionOneClose;
+                    }).ToList();
                     if (candles.Count > 0)
                     {
                         snapshot.Symbols.Add(new SymbolMarketData
@@ -375,7 +412,9 @@ public sealed class ScanEngine(MarketDataService market, AppDataService data, Un
         });
         if (requireVerifiedClosing)
             throw new ClosingDataNotReadyException(
-                $"Data closing sesi {(session.Intraday ? "1" : "2")} belum tersedia lengkap.");
+                Loc.T(
+                    $"Data closing sesi {(session.Intraday ? "1" : "2")} belum tersedia lengkap.",
+                    $"Complete Session {(session.Intraday ? "1" : "2")} closing data is not available yet."));
     }
 
     static SessionResolution ResolveSession(bool requestedIntraday, DateTime now)
@@ -396,6 +435,36 @@ public sealed class ScanEngine(MarketDataService market, AppDataService data, Un
         return new SessionResolution(date, requestedIntraday, false);
     }
 
+    async Task<SessionResolution> ResolveAvailablePreviousCloseAsync(
+        SessionResolution session, CancellationToken ct)
+    {
+        if (!session.IsPreviousTradingDay)
+            return session;
+        try
+        {
+            var reference = await market.GetCandlesAsync(
+                "BBCA", false, ct);
+            var latest = reference
+                .Where(x => x.Time.Date <= session.TradingDate.Date)
+                .OrderBy(x => x.Time)
+                .LastOrDefault();
+            if (latest is not null &&
+                latest.Time.Date < session.TradingDate.Date)
+                return new SessionResolution(
+                    latest.Time.Date, false, true);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            // The normal closing verification below will provide the visible
+            // retry behavior when the reference request is unavailable.
+        }
+        return session;
+    }
+
     readonly record struct SessionResolution(
         DateTime TradingDate, bool Intraday, bool IsPreviousTradingDay);
 
@@ -404,8 +473,9 @@ public sealed class ScanEngine(MarketDataService market, AppDataService data, Un
         IProgress<ScanProgress>? progress, CancellationToken ct)
     {
         if (!snapshot.IsComplete)
-            throw new InvalidOperationException(
-                $"Snapshot masih parsial ({snapshot.CompletedCount}/{snapshot.RequestedCount}). Lanjutkan pengambilan data sebelum analisis.");
+            throw new InvalidOperationException(Loc.T(
+                $"Snapshot masih parsial ({snapshot.CompletedCount}/{snapshot.RequestedCount}). Lanjutkan pengambilan data sebelum analisis.",
+                $"The snapshot is still partial ({snapshot.CompletedCount}/{snapshot.RequestedCount}). Continue fetching data before analysis."));
         var output = new List<ScanResult>();
         var completed = 0;
         foreach (var item in snapshot.Symbols)
@@ -432,25 +502,27 @@ public sealed class ScanEngine(MarketDataService market, AppDataService data, Un
                 Succeeded = output.Count
             });
         }
-        AllocateAvailableCash(output);
-        var allResults = output
-            .OrderByDescending(x => x.AllocationRank > 0)
-            .ThenBy(x => x.AllocationRank == 0 ? int.MaxValue : x.AllocationRank)
-            .ThenByDescending(x => x.Score)
-            .ThenByDescending(x => x.RiskReward)
-            .ThenByDescending(x => x.LastPrice)
-            .ToList();
-        EvaluateHistory(allResults, intraday);
-        data.ApplyMarketPrices(snapshot);
-        // Keep all evaluated shares for audit, but only actionable BUY AREA
-        // results are recommendations and prediction-performance observations.
-        var ranked = allResults;
-        data.State.LastScan = ranked;
         var existingRun = data.State.ScanHistory.LastOrDefault(x =>
             x.SessionKey == snapshot.SessionKey &&
             x.StrategyVersion == data.State.Strategy.Version);
         var preservedOutcomes = existingRun?.Predictions
             .ToDictionary(x => x.Symbol, StringComparer.OrdinalIgnoreCase);
+        ApplyEventVeto(output);
+        FreezeCancelledSignals(output, preservedOutcomes);
+        AllocateAvailableCash(output);
+        var allResults = output
+            .OrderByDescending(x => x.AllocationRank > 0)
+            .ThenBy(x => x.AllocationRank == 0 ? int.MaxValue : x.AllocationRank)
+            .ThenByDescending(x => x.CombinedScore)
+            .ThenByDescending(x => x.RiskReward)
+            .ThenByDescending(x => x.LastPrice)
+            .ToList();
+        EvaluateHistory(snapshot.Symbols);
+        data.ApplyMarketPrices(snapshot);
+        // Keep all evaluated shares for audit, but only actionable BUY AREA
+        // results are recommendations and prediction-performance observations.
+        var ranked = allResults;
+        data.State.LastScan = ranked;
         var run = existingRun ?? new ScanRun();
         run.RunTime = DateTime.Now;
         run.Session = intraday ? "LUNCH" : "EVENING";
@@ -467,17 +539,49 @@ public sealed class ScanEngine(MarketDataService market, AppDataService data, Un
             .Take(30)
             .ToList();
         run.ShortlistCount = recommendations.Count;
-        run.Predictions = recommendations.Select(x =>
+        var refreshedPredictions = recommendations.Select(x =>
         {
-            if (preservedOutcomes?.TryGetValue(x.Symbol, out var prior) == true &&
-                prior.Outcome != "PENDING") return prior;
+            // Re-running the same session must not reset the prediction clock
+            // or turn an already-filled/finished signal into a new prediction.
+            if (preservedOutcomes?.TryGetValue(x.Symbol, out var prior) == true)
+                return prior;
             return new PredictionRecord
             {
-                Symbol = x.Symbol, Verdict = x.Verdict, Score = x.Score,
-                StartPrice = x.LastPrice, StopLoss = x.StopLoss, Target1 = x.Target1,
-                PredictedAt = DateTime.Now, DataSession = x.DataSession
+                Symbol = x.Symbol, Verdict = x.Verdict,
+                Score = x.CombinedScore,
+                StartPrice = x.EntryHigh,
+                StopLoss = x.StopLoss,
+                Target1 = x.Target1,
+                PredictedAt = DateTime.Now,
+                SignalDate = x.DataTime.Date,
+                MaximumHoldingDays = x.MaximumHoldingDays,
+                DataSession = x.DataSession
             };
         }).ToList();
+        if (preservedOutcomes is not null)
+        {
+            var activeSymbols = refreshedPredictions
+                .Select(x => x.Symbol)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var prior in preservedOutcomes.Values
+                         .Where(x => !activeSymbols.Contains(x.Symbol)))
+            {
+                // A pre-opening event refresh can veto a recommendation made
+                // at 07:00. Keep the audit record, but make it explicit that
+                // the order must be cancelled before it can be filled.
+                if (prior.Outcome == "PENDING" &&
+                    !prior.EntryFilledAt.HasValue)
+                {
+                    prior.Outcome = "CANCELLED";
+                    prior.EvaluatedAt = DateTime.Now;
+                    prior.ReturnPercent = 0;
+                }
+                refreshedPredictions.Add(prior);
+            }
+        }
+        run.Predictions = refreshedPredictions
+            .OrderByDescending(x => x.PredictedAt)
+            .ToList();
         progress?.Report(new()
         {
             Stage = "SAVING",
@@ -492,6 +596,29 @@ public sealed class ScanEngine(MarketDataService market, AppDataService data, Un
             data.State.ScanHistory = data.State.ScanHistory.OrderByDescending(x => x.RunTime).Take(60).OrderBy(x => x.RunTime).ToList();
         await data.SaveAsync();
         return ranked;
+    }
+
+    static void FreezeCancelledSignals(
+        IEnumerable<ScanResult> results,
+        IReadOnlyDictionary<string, PredictionRecord>? preservedOutcomes)
+    {
+        if (preservedOutcomes is null) return;
+        foreach (var result in results)
+        {
+            if (!preservedOutcomes.TryGetValue(
+                    result.Symbol, out var prediction) ||
+                prediction.Outcome != "CANCELLED")
+                continue;
+
+            // Once the pre-opening instruction says CANCEL, do not let a
+            // later refresh on the same session silently reactivate it.
+            result.Verdict = "WATCH";
+            result.SuggestedLots = 0;
+            result.ExecutionNote =
+                "DIBATALKAN untuk sesi ini. Jangan aktifkan kembali atau mengejar harga.";
+            result.ExecutionNoteEn =
+                "CANCELLED for this session. Do not reactivate or chase the price.";
+        }
     }
 
     void AllocateAvailableCash(List<ScanResult> results)
@@ -512,7 +639,7 @@ public sealed class ScanEngine(MarketDataService market, AppDataService data, Un
                      // They must never compete with new-entry candidates for cash
                      // or show a contradictory scanner buy recommendation.
                      .Where(x => x.Verdict == "BUY AREA" && !ownedSymbols.Contains(x.Symbol))
-                     .OrderByDescending(x => x.Score)
+                     .OrderByDescending(x => x.CombinedScore)
                      .ThenByDescending(x => x.RiskReward)
                      .ThenBy(x => x.EntryHigh))
         {
@@ -526,12 +653,17 @@ public sealed class ScanEngine(MarketDataService market, AppDataService data, Un
                 item.ExecutionNote = oneLotCash > data.State.Cash
                     ? $"Minimal 1 lot memerlukan sekitar Rp{oneLotCash:N0}; kas Rp{data.State.Cash:N0}."
                     : "Kas sudah dialokasikan ke kandidat dengan prioritas lebih tinggi.";
+                item.ExecutionNoteEn = oneLotCash > data.State.Cash
+                    ? $"At least 1 lot needs about Rp{oneLotCash:N0}; cash is Rp{data.State.Cash:N0}."
+                    : "Cash has been allocated to a higher-priority candidate.";
                 continue;
             }
             item.SuggestedLots = allocatedLots;
             item.AllocationRank = rank++;
             item.AllocatedCash = allocatedLots * oneLotCash;
             item.ExecutionNote = $"Prioritas alokasi #{item.AllocationRank} • estimasi dana Rp{item.AllocatedCash:N0} termasuk fee.";
+            item.ExecutionNoteEn =
+                $"Allocation priority #{item.AllocationRank} • estimated Rp{item.AllocatedCash:N0} including fees.";
             remaining -= item.AllocatedCash;
         }
         foreach (var item in results.Where(x => ownedSymbols.Contains(x.Symbol)))
@@ -541,6 +673,42 @@ public sealed class ScanEngine(MarketDataService market, AppDataService data, Un
             item.SuggestedLots = 0;
             item.ExecutionNote =
                 "Saham sudah dimiliki; tindakan mengikuti keputusan Portofolio.";
+            item.ExecutionNoteEn =
+                "This stock is already owned; follow the Portfolio decision.";
+        }
+    }
+
+    void ApplyEventVeto(IEnumerable<ScanResult> results)
+    {
+        var threshold = data.State.Strategy.BuyScore;
+        foreach (var item in results)
+        {
+            if (!data.State.AutoEventIntelligence)
+            {
+                item.EventAdjustment = 0;
+                item.CombinedScore = item.Score;
+                continue;
+            }
+            var eventView = events.Summarize(item.Symbol);
+            item.EventAdjustment = eventView.Adjustment;
+            item.CombinedScore = Math.Clamp(
+                item.Score + eventView.Adjustment, 0, 100);
+            if (item.Verdict != "BUY AREA" ||
+                item.CombinedScore >= threshold)
+                continue;
+
+            // Event data may veto a technical entry, but it never upgrades a
+            // weak technical setup into a buy.
+            item.Verdict = "WATCH";
+            item.SuggestedLots = 0;
+            item.ExecutionNote =
+                $"Beli dibatalkan oleh veto isu: skor gabungan {item.CombinedScore}/100 di bawah batas {threshold}.";
+            item.ExecutionNoteEn =
+                $"Buy cancelled by the event veto: combined score {item.CombinedScore}/100 is below the {threshold} threshold.";
+            item.Risks +=
+                $", penyesuaian isu {item.EventAdjustment:+#;-#;0} membatalkan sinyal beli";
+            item.RisksEn +=
+                $", an event adjustment of {item.EventAdjustment:+#;-#;0} cancelled the buy signal";
         }
     }
 
@@ -557,23 +725,104 @@ public sealed class ScanEngine(MarketDataService market, AppDataService data, Un
         return (results, usedCache, snapshot);
     }
 
-    void EvaluateHistory(IReadOnlyCollection<ScanResult> latest, bool intraday)
+    void EvaluateHistory(IReadOnlyCollection<SymbolMarketData> marketData)
     {
-        var priceBySymbol = latest.ToDictionary(x => x.Symbol, x => x.LastPrice);
+        var candlesBySymbol = marketData.ToDictionary(
+            x => x.Symbol,
+            x => ToDailyCandles(x.Candles),
+            StringComparer.OrdinalIgnoreCase);
         var now = DateTime.Now;
         foreach (var run in data.State.ScanHistory)
         {
-            var minimumAge = run.Session == "LUNCH" ? TimeSpan.FromHours(2) : TimeSpan.FromHours(12);
-            if (now - run.RunTime < minimumAge) continue;
             foreach (var prediction in run.Predictions.Where(x => x.Outcome == "PENDING"))
             {
-                if (!priceBySymbol.TryGetValue(prediction.Symbol, out var price)) continue;
+                if (!candlesBySymbol.TryGetValue(
+                        prediction.Symbol, out var allCandles) ||
+                    allCandles.Count == 0) continue;
+
+                var signalDate = prediction.SignalDate == default
+                    ? prediction.PredictedAt.Date
+                    : prediction.SignalDate.Date;
+                var future = allCandles
+                    .Where(x => x.Time.Date > signalDate)
+                    .OrderBy(x => x.Time)
+                    .ToList();
+                if (future.Count == 0) continue;
+
+                if (!prediction.EntryFilledAt.HasValue)
+                {
+                    var entryCandle = future[0];
+                    if (entryCandle.Low > prediction.StartPrice)
+                    {
+                        // Good-for-Day order expired without being filled.
+                        prediction.EvaluatedAt = now;
+                        prediction.EvaluationPrice = entryCandle.Close;
+                        prediction.ReturnPercent = 0;
+                        prediction.Outcome = "NOT_FILLED";
+                        continue;
+                    }
+                    prediction.EntryFilledAt = entryCandle.Time;
+                    prediction.FilledPrice = entryCandle.Open > 0
+                        ? Math.Min(entryCandle.Open, prediction.StartPrice)
+                        : prediction.StartPrice;
+                }
+
+                var entryDate = prediction.EntryFilledAt.Value.Date;
+                var holdingCandles = allCandles
+                    .Where(x => x.Time.Date >= entryDate)
+                    .OrderBy(x => x.Time)
+                    .Take(Math.Max(1, prediction.MaximumHoldingDays))
+                    .ToList();
+                if (holdingCandles.Count == 0) continue;
+
+                decimal? exitPrice = null;
+                string? outcome = null;
+                foreach (var candle in holdingCandles)
+                {
+                    // When target and stop are both inside one daily candle,
+                    // assume the stop was hit first. This avoids optimistic
+                    // look-ahead from unknown intraday ordering.
+                    if (candle.Low <= prediction.StopLoss)
+                    {
+                        // A stop cannot fill above a gap-down open. Using the
+                        // displayed stop in that case would manufacture a
+                        // better exit—and can even turn a bad gap into profit.
+                        exitPrice = candle.Open > 0
+                            ? Math.Min(candle.Open, prediction.StopLoss)
+                            : prediction.StopLoss;
+                        outcome = "STOP";
+                        break;
+                    }
+                    if (candle.High >= prediction.Target1)
+                    {
+                        exitPrice = prediction.Target1;
+                        outcome = "TARGET";
+                        break;
+                    }
+                }
+
+                if (outcome is null &&
+                    holdingCandles.Count >=
+                    Math.Max(1, prediction.MaximumHoldingDays))
+                {
+                    exitPrice = holdingCandles[^1].Close;
+                    outcome = "TIME_EXIT";
+                }
+                if (outcome is null || !exitPrice.HasValue) continue;
+
+                var filled = prediction.FilledPrice ??
+                             prediction.StartPrice;
                 prediction.EvaluatedAt = now;
-                prediction.EvaluationPrice = price;
-                prediction.ReturnPercent = prediction.StartPrice == 0 ? 0 : (price / prediction.StartPrice - 1) * 100;
-                prediction.Outcome = price >= prediction.Target1 ? "TARGET"
-                    : price <= prediction.StopLoss ? "STOP"
-                    : prediction.ReturnPercent > 0 ? "POSITIVE" : "NEGATIVE";
+                prediction.EvaluationPrice = exitPrice;
+                var entryCost =
+                    filled * (1m + data.State.BuyFeeRate);
+                var exitProceeds =
+                    exitPrice.Value *
+                    (1m - data.State.SellFeeRate);
+                prediction.ReturnPercent = entryCost <= 0
+                    ? 0
+                    : (exitProceeds / entryCost - 1) * 100;
+                prediction.Outcome = outcome;
             }
         }
     }
@@ -588,98 +837,278 @@ public sealed class ScanEngine(MarketDataService market, AppDataService data, Un
         var sma50 = closes.TakeLast(Math.Min(50, closes.Length)).Average();
         var avgVolume = c.TakeLast(20).Average(x => (decimal)x.Volume);
         var rsi = Rsi(closes, 14);
-        var atr = c.TakeLast(14).Average(x => x.High - x.Low);
+        var atr = Atr(c, 14);
         if (atr <= 0 || last.Close <= 0) return null;
+        var daily = ToDailyCandles(c);
+        var liquidWindow = daily.TakeLast(Math.Min(20, daily.Count)).ToList();
+        var medianDailyValue = liquidWindow.Count == 0
+            ? 0
+            : Median(liquidWindow.Select(x => x.Close * x.Volume));
+        var liquidEnough = medianDailyValue >= 2_000_000_000m;
+        var priceEligible = last.Close >= 100m;
+        var trendConfirmed = last.Close > sma20 && sma20 > sma50;
         // Continuous components deliberately avoid score piles such as 80/100.
         // The former implementation only used +15/+10 blocks, so many unrelated
         // shares received an identical rating.
         var scoreValue = 35m;
         var reasons = new List<string>();
+        var reasonsEn = new List<string>();
         var risks = new List<string>();
+        var risksEn = new List<string>();
         if (last.Close > sma20)
         {
             scoreValue += 10m + Math.Min(7m, (last.Close / sma20 - 1m) * 100m);
             reasons.Add("harga di atas rata-rata 20 periode");
+            reasonsEn.Add("price is above the 20-period average");
         }
-        else risks.Add("harga masih di bawah rata-rata 20 periode");
+        else
+        {
+            risks.Add("harga masih di bawah rata-rata 20 periode");
+            risksEn.Add("price remains below the 20-period average");
+        }
         if (sma20 > sma50)
         {
             scoreValue += 9m + Math.Min(7m, (sma20 / sma50 - 1m) * 100m);
             reasons.Add("tren menengah naik");
+            reasonsEn.Add("the medium-term trend is rising");
+        }
+        else
+        {
+            risks.Add("tren menengah belum naik");
+            risksEn.Add("the medium-term trend is not rising yet");
         }
         var volumeRatio = avgVolume <= 0 ? 0 : last.Volume / avgVolume;
         if (volumeRatio > data.State.Strategy.VolumeConfirmation)
         {
             scoreValue += 8m + Math.Min(8m, (volumeRatio - data.State.Strategy.VolumeConfirmation) * 8m);
             reasons.Add("volume lebih kuat dari normal");
+            reasonsEn.Add("volume is stronger than normal");
         }
         if (rsi is >= 48 and <= 68)
         {
             scoreValue += 6m + Math.Max(0m, 5m - Math.Abs(rsi - 58m) / 2m);
             reasons.Add("momentum sehat, belum terlalu panas");
+            reasonsEn.Add("momentum is healthy and not overheated");
         }
-        if (rsi > 72) { scoreValue -= 15m + Math.Min(8m, rsi - 72m); risks.Add("momentum sudah terlalu panas"); }
-        if (speculative) { scoreValue -= 8m; risks.Add("kategori spekulatif: ukuran posisi wajib kecil"); }
-        var stop = RoundPrice(last.Close - atr * data.State.Strategy.AtrStopMultiplier);
-        var risk = last.Close - stop;
-        if (risk <= 0) return null;
+        if (rsi > 72)
+        {
+            scoreValue -= 15m + Math.Min(8m, rsi - 72m);
+            risks.Add("momentum sudah terlalu panas");
+            risksEn.Add("momentum is already overheated");
+        }
+        if (!liquidEnough)
+        {
+            scoreValue -= 20m;
+            risks.Add("median nilai transaksi harian belum mencapai Rp2 miliar");
+            risksEn.Add("daily traded value is below Rp2 billion");
+        }
+        if (!priceEligible)
+        {
+            scoreValue -= 15m;
+            risks.Add("harga di bawah Rp100 tidak eligible untuk rekomendasi beli");
+            risksEn.Add("stocks below Rp100 are not eligible for a buy recommendation");
+        }
+        if (speculative)
+        {
+            scoreValue -= 8m;
+            risks.Add("kategori spekulatif: ukuran posisi wajib kecil");
+            risksEn.Add("speculative category: position size must stay small");
+        }
+
+        // A single GFD limit is produced. The buffer is capped at 1% so the
+        // recommendation never turns into a wide range or an invitation to
+        // chase price.
+        var entryBuffer = Math.Min(atr * .25m, last.Close * .01m);
+        var entry = RoundDownPrice(last.Close + entryBuffer);
+        var stop = RoundUpPrice(
+            entry - atr * data.State.Strategy.AtrStopMultiplier);
+        if (stop >= entry)
+            stop = PreviousPriceStep(entry);
+        var entryCostPerShare =
+            entry * (1m + data.State.BuyFeeRate);
+        var stopProceedsPerShare =
+            stop * (1m - data.State.SellFeeRate);
+        var netRiskPerShare =
+            entryCostPerShare - stopProceedsPerShare;
+        if (netRiskPerShare <= 0) return null;
         var minimumRiskReward = Math.Max(data.State.MinRiskReward, data.State.Strategy.MinimumRiskReward);
-        var target1 = RoundPrice(last.Close + risk * minimumRiskReward);
-        var target2 = RoundPrice(last.Close + risk * 3m);
-        var lotsByRisk = (int)Math.Floor(data.State.RiskPerTrade / (risk * 100m));
+        var target1 = RoundUpPrice(
+            (entryCostPerShare +
+             netRiskPerShare * minimumRiskReward) /
+            Math.Max(.0001m, 1m - data.State.SellFeeRate));
+        var secondaryRiskReward =
+            Math.Max(3m, minimumRiskReward + 1m);
+        var target2 = RoundUpPrice(
+            (entryCostPerShare +
+             netRiskPerShare * secondaryRiskReward) /
+            Math.Max(.0001m, 1m - data.State.SellFeeRate));
+        var actualRewardPerShare =
+            target1 * (1m - data.State.SellFeeRate) -
+            entryCostPerShare;
+        var actualRiskReward =
+            actualRewardPerShare / netRiskPerShare;
+        var lotsByRisk = (int)Math.Floor(
+            data.State.RiskPerTrade /
+            (netRiskPerShare * 100m));
         var maxValue = speculative ? data.State.Strategy.MaximumSpeculativePosition : data.State.Strategy.MaximumNormalPosition;
-        var lotsByValue = (int)Math.Floor(maxValue / (last.Close * 100m));
+        var oneLotCash = entry * 100m * (1m + data.State.BuyFeeRate);
+        var lotsByValue = oneLotCash <= 0
+            ? 0
+            : (int)Math.Floor(maxValue / oneLotCash);
         var lots = Math.Max(0, Math.Min(lotsByRisk, lotsByValue));
         var score = Math.Clamp((int)Math.Round(scoreValue), 0, 100);
         var age = DateTime.Now - last.Time;
+        var freshEnough = !intraday || age <= TimeSpan.FromMinutes(60);
         if (intraday && age > TimeSpan.FromMinutes(60))
+        {
             risks.Add("snapshot intraday sudah lama; jangan entry tanpa cek harga berjalan di Stockbit");
+            risksEn.Add("the intraday snapshot is stale; do not enter without checking Stockbit");
+        }
+        var eligible = trendConfirmed && liquidEnough &&
+                       priceEligible && freshEnough;
         return new ScanResult
         {
             Symbol = symbol,
-            Verdict = score >= data.State.Strategy.BuyScore && lots > 0
+            Verdict = eligible &&
+                      score >= data.State.Strategy.BuyScore && lots > 0
                 ? "BUY AREA"
-                : score >= data.State.Strategy.BuyScore
+                : eligible && score >= data.State.Strategy.BuyScore
                     ? "PANTAU — LOT 0"
                     : score >= data.State.Strategy.WatchScore ? "WATCH" : "WAIT",
             Score = score,
+            CombinedScore = score,
             LastPrice = RoundPrice(last.Close),
             // One executable limit price, not a range. Keeping both legacy
             // fields equal preserves existing saved-data compatibility.
-            EntryLow = RoundPrice(last.Close + atr * .25m),
-            EntryHigh = RoundPrice(last.Close + atr * .25m),
-            MaxBuyPrice = RoundPrice(last.Close + atr * .5m),
+            EntryLow = entry,
+            EntryHigh = entry,
+            MaxBuyPrice = entry,
             StopLoss = stop,
             Target1 = target1,
             Target2 = target2,
             SuggestedLots = lots,
-            RiskReward = minimumRiskReward,
+            RiskReward = actualRiskReward,
             DataTime = last.Time,
             DataSession = intraday ? "Closing Sesi 1" : "Closing Sesi 2",
             Reasons = reasons.Count == 0 ? "belum ada konfirmasi kuat" : string.Join(", ", reasons),
+            ReasonsEn = reasonsEn.Count == 0
+                ? "there is no strong confirmation yet"
+                : string.Join(", ", reasonsEn),
             Risks = risks.Count == 0 ? "tetap konfirmasi harga dan kondisi IHSG di Stockbit" : string.Join(", ", risks),
-            IsSpeculative = speculative
+            RisksEn = risksEn.Count == 0
+                ? "always confirm price and IHSG conditions in Stockbit"
+                : string.Join(", ", risksEn),
+            IsSpeculative = speculative,
+            MaximumHoldingDays = 20
         };
     }
 
     static decimal Rsi(decimal[] values, int period)
     {
+        if (values.Length < period + 1) return 50;
+        var window = values.TakeLast(period + 1).ToArray();
         decimal gain = 0, loss = 0;
-        foreach (var pair in values.TakeLast(period + 1).Zip(values.TakeLast(period), (a, b) => (a, b)))
+        for (var i = 1; i < window.Length; i++)
         {
-            var d = pair.a - pair.b;
+            // The previous implementation subtracted current from previous,
+            // reversing every gain/loss and therefore the RSI signal.
+            var d = window[i] - window[i - 1];
             if (d > 0) gain += d; else loss -= d;
         }
+        if (gain == 0 && loss == 0) return 50;
         if (loss == 0) return 100;
         var rs = gain / loss;
         return 100 - 100 / (1 + rs);
     }
 
+    static decimal Atr(IReadOnlyList<Candle> candles, int period)
+    {
+        if (candles.Count < 2) return 0;
+        var start = Math.Max(1, candles.Count - period);
+        decimal total = 0;
+        var count = 0;
+        for (var i = start; i < candles.Count; i++)
+        {
+            var candle = candles[i];
+            var previousClose = candles[i - 1].Close;
+            var trueRange = new[]
+            {
+                Math.Abs(candle.High - candle.Low),
+                Math.Abs(candle.High - previousClose),
+                Math.Abs(candle.Low - previousClose)
+            }.Max();
+            total += trueRange;
+            count++;
+        }
+        return count == 0 ? 0 : total / count;
+    }
+
+    static decimal Median(IEnumerable<decimal> values)
+    {
+        var ordered = values.OrderBy(x => x).ToArray();
+        if (ordered.Length == 0) return 0;
+        var middle = ordered.Length / 2;
+        return ordered.Length % 2 == 1
+            ? ordered[middle]
+            : (ordered[middle - 1] + ordered[middle]) / 2m;
+    }
+
+    static List<Candle> ToDailyCandles(IEnumerable<Candle> candles) =>
+        candles
+            .Where(x => x.Close > 0)
+            .OrderBy(x => x.Time)
+            .GroupBy(x => x.Time.Date)
+            .Select(group =>
+            {
+                var ordered = group.OrderBy(x => x.Time).ToList();
+                return new Candle
+                {
+                    Time = group.Key,
+                    Open = ordered.First().Open,
+                    High = ordered.Max(x => x.High),
+                    Low = ordered.Min(x => x.Low),
+                    Close = ordered.Last().Close,
+                    Volume = ordered.Sum(x => x.Volume)
+                };
+            })
+            .ToList();
+
     static decimal RoundPrice(decimal value)
     {
-        var step = value < 200 ? 1 : value < 500 ? 2 : value < 2000 ? 5 : value < 5000 ? 10 : 25;
+        var step = PriceStep(value);
         return Math.Max(step, Math.Round(value / step) * step);
     }
+
+    static decimal RoundDownPrice(decimal value)
+    {
+        var step = PriceStep(value);
+        return Math.Max(step, Math.Floor(value / step) * step);
+    }
+
+    static decimal RoundUpPrice(decimal value)
+    {
+        var step = PriceStep(value);
+        return Math.Max(step, Math.Ceiling(value / step) * step);
+    }
+
+    static decimal PreviousPriceStep(decimal value)
+    {
+        // At a band boundary the previous valid price uses the lower band's
+        // fraction: 200→199, 500→498, 2,000→1,995, 5,000→4,990.
+        var probe = Math.Max(1m, value - .0001m);
+        var step = PriceStep(probe);
+        return Math.Max(
+            step, Math.Floor(probe / step) * step);
+    }
+
+    static decimal PriceStep(decimal value) =>
+        value < 200 ? 1 :
+        value < 500 ? 2 :
+        value < 2000 ? 5 :
+        value < 5000 ? 10 : 25;
 }
 
-public sealed class ClosingDataNotReadyException(string message) : Exception(message);
+public sealed class ClosingDataNotReadyException(string message)
+    : Exception(message)
+{
+}

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using StockMate.Models;
+using StockMate.Ui;
 
 namespace StockMate.Services;
 
@@ -63,7 +64,7 @@ public sealed class AppDataService
             _ioGate.Release();
         }
         if (!notify) return;
-        Changed?.Invoke();
+        NotifyChanged();
     }
 
     public void Reset() => State = Empty();
@@ -101,11 +102,16 @@ public sealed class AppDataService
 
     void Migrate()
     {
+        State.Positions ??= [];
+        State.Transactions ??= [];
+        State.TransactionImports ??= [];
+        State.LastScan ??= [];
+        State.ScanHistory ??= [];
         State.MarketUniverse ??= [];
         State.MarketSnapshots ??= [];
-        State.TransactionImports ??= [];
         State.PortfolioDecisions ??= [];
         State.EventInsights ??= [];
+        State.Strategy ??= new StrategyConfig();
         foreach (var snapshot in State.MarketSnapshots)
         {
             snapshot.FailedSymbols ??= [];
@@ -178,6 +184,17 @@ public sealed class AppDataService
             State.AutoEventIntelligence = true;
             State.DataSchemaVersion = 1700;
         }
+        if (State.DataSchemaVersion < 1800)
+        {
+            // v0.7.2 corrects reversed RSI, true-range ATR, entry-based risk,
+            // and GFD outcome evaluation. Old scanner output is not comparable
+            // and must not remain visible as if it used the corrected engine.
+            State.LastScan.Clear();
+            State.ScanHistory.Clear();
+            State.MarketSnapshots.Clear();
+            State.PortfolioDecisions.Clear();
+            State.DataSchemaVersion = 1800;
+        }
         // Positions are derived only from imported or explicitly entered
         // transactions. Never manufacture opening transactions from UI data.
         if (State.Transactions.Count == 0)
@@ -213,22 +230,32 @@ public sealed class AppDataService
         symbol = NormalizeSymbol(symbol);
         side = side.Trim().ToUpperInvariant();
         if (symbol.Length < 4 || symbol.Length > 6 || lots <= 0 || price <= 0)
-            return (false, "Kode saham, jumlah lot, atau harga tidak valid.");
+            return (false, Loc.T(
+                "Kode saham, jumlah lot, atau harga tidak valid.",
+                "The stock symbol, lot count, or price is invalid."));
         if (side is not ("BUY" or "SELL"))
-            return (false, "Jenis transaksi harus BUY atau SELL.");
+            return (false, Loc.T(
+                "Jenis transaksi harus BUY atau SELL.",
+                "The transaction side must be BUY or SELL."));
         if (State.MarketUniverse.Count > 0 &&
             !State.MarketUniverse.Contains(symbol, StringComparer.OrdinalIgnoreCase))
-            return (false, $"{symbol} tidak ditemukan pada universe IDX tersimpan.");
+            return (false, Loc.T(
+                $"{symbol} tidak ditemukan pada universe IDX tersimpan.",
+                $"{symbol} was not found in the saved IDX universe."));
 
         RebuildPositions();
         var current = State.Positions.FirstOrDefault(x => x.Symbol == symbol);
         if (side == "SELL" && (current is null || current.Lots < lots))
-            return (false, $"Lot {symbol} tidak cukup. Tersedia {current?.Lots ?? 0} lot.");
+            return (false, Loc.T(
+                $"Lot {symbol} tidak cukup. Tersedia {current?.Lots ?? 0} lot.",
+                $"There are not enough {symbol} lots. Available: {current?.Lots ?? 0} lots."));
 
         var gross = lots * 100m * price;
         var fee = decimal.Round(gross * (side == "BUY" ? State.BuyFeeRate : State.SellFeeRate), 0);
         if (side == "BUY" && State.Cash < gross + fee)
-            return (false, $"Kas tidak cukup. Dibutuhkan Rp {gross + fee:N0}.");
+            return (false, Loc.T(
+                $"Kas tidak cukup. Dibutuhkan Rp {gross + fee:N0}.",
+                $"Insufficient cash. Rp {gross + fee:N0} is required."));
 
         State.Transactions.Add(new TradeTransaction
         {
@@ -238,7 +265,9 @@ public sealed class AppDataService
         RecalculateCash();
         RebuildPositions();
         await SaveAsync();
-        return (true, $"{side} {symbol} {lots} lot tercatat. Fee Rp {fee:N0}.");
+        return (true, Loc.T(
+            $"{side} {symbol} {lots} lot tercatat. Fee Rp {fee:N0}.",
+            $"{side} {symbol} {lots} lots recorded. Fee Rp {fee:N0}."));
     }
 
     public void RebuildPositions()
@@ -391,8 +420,9 @@ public sealed class AppDataService
         string acquisitionType)
     {
         if (lots < missing.MinimumLots || averagePrice <= 0 || acquisitionFee < 0)
-            return (false,
-                $"{missing.Symbol}: minimal {missing.MinimumLots} lot, harga harus di atas 0, dan biaya tidak boleh negatif.");
+            return (false, Loc.T(
+                $"{missing.Symbol}: minimal {missing.MinimumLots} lot, harga harus di atas 0, dan biaya tidak boleh negatif.",
+                $"{missing.Symbol}: enter at least {missing.MinimumLots} lots, a price above 0, and a non-negative fee."));
 
         foreach (var existing in State.Transactions.Where(x =>
                      x.IsActive && x.Source == "IPO_SYNC" &&
@@ -418,7 +448,9 @@ public sealed class AppDataService
         RebuildPositions();
         RecalculateCash();
         await SaveAsync();
-        return (true, $"{missing.Symbol}: cost basis {lots} lot @ Rp {averagePrice:N0} disimpan.");
+        return (true, Loc.T(
+            $"{missing.Symbol}: cost basis {lots} lot @ Rp {averagePrice:N0} disimpan.",
+            $"{missing.Symbol}: cost basis for {lots} lots @ Rp {averagePrice:N0} was saved."));
     }
 
     public void ApplyMarketPrices(IEnumerable<ScanResult> results)
@@ -448,8 +480,25 @@ public sealed class AppDataService
             x.Symbol.Equals(symbol, StringComparison.OrdinalIgnoreCase));
         if (position is null) return false;
         position.LastPrice = price;
-        Changed?.Invoke();
+        Interlocked.Increment(ref _revision);
+        NotifyChanged();
         return true;
+    }
+
+    void NotifyChanged()
+    {
+        var handlers = Changed?.GetInvocationList();
+        if (handlers is null) return;
+        foreach (var handler in handlers)
+            try
+            {
+                ((Action)handler)();
+            }
+            catch
+            {
+                // A page may have been replaced while a save was completing.
+                // Persisted data remains valid; ignore only the stale UI listener.
+            }
     }
 
     static AppState Empty() => new();

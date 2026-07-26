@@ -13,11 +13,14 @@ public sealed class StartupPage : ContentPage
 
     public StartupPage()
     {
+        // State has not been loaded yet, so use the small preference mirror to
+        // keep the startup screen in the language selected on the previous run.
+        Loc.Use(Preferences.Default.Get("app.language", "id"));
         BackgroundColor = UiKit.Navy;
 
         _status = new Label
         {
-            Text = "Menyiapkan aplikasi…",
+            Text = Loc.T("Menyiapkan aplikasi…"),
             TextColor = UiKit.Muted,
             FontSize = 14,
             HorizontalTextAlignment = TextAlignment.Center
@@ -62,7 +65,9 @@ public sealed class StartupPage : ContentPage
                         },
                         new Label
                         {
-                            Text = "Your smarter market companion",
+                            Text = Loc.T(
+                                "Pendamping pasar yang lebih cerdas",
+                                "Your smarter market companion"),
                             TextColor = UiKit.Muted,
                             FontSize = 13,
                             HorizontalTextAlignment = TextAlignment.Center
@@ -89,7 +94,7 @@ public sealed class StartupPage : ContentPage
         _retry.IsVisible = false;
         _spinner.IsVisible = true;
         _spinner.IsRunning = true;
-        _status.Text = "Memuat portofolio dan pengaturan…";
+        _status.Text = Loc.T("Memuat portofolio dan pengaturan…");
 
         try
         {
@@ -97,8 +102,13 @@ public sealed class StartupPage : ContentPage
             await Task.Yield();
             var data = App.Services.GetRequiredService<AppDataService>();
             await data.LoadAsync();
+            Loc.Use(data.State.LanguageCode);
+            Preferences.Default.Set(
+                "app.language", data.State.LanguageCode);
 
-            _status.Text = "Menyiapkan dashboard…";
+            _status.Text = Loc.T(
+                "Menyiapkan dashboard…",
+                "Preparing dashboard…");
 
             if (Window is not null)
             {
@@ -117,7 +127,9 @@ public sealed class StartupPage : ContentPage
         {
             _spinner.IsRunning = false;
             _spinner.IsVisible = false;
-            _status.Text = $"Aplikasi gagal dimuat.\n{ex.Message}";
+            _status.Text = Loc.T(
+                $"Aplikasi gagal dimuat.\n{ex.Message}",
+                $"The app failed to load.\n{ex.Message}");
             _retry.IsVisible = true;
         }
     }

@@ -2,6 +2,7 @@ using System.Net.Http.Json;
 using System.Net;
 using System.Text.Json;
 using StockMate.Models;
+using StockMate.Ui;
 
 namespace StockMate.Services;
 
@@ -47,7 +48,9 @@ public sealed class MarketDataService
             var chart = doc.RootElement.GetProperty("chart");
             if (chart.TryGetProperty("error", out var error) &&
                 error.ValueKind is not JsonValueKind.Null)
-                throw new HttpRequestException($"Sumber harga mengembalikan error: {error}");
+                throw new HttpRequestException(Loc.T(
+                    $"Sumber harga mengembalikan error: {error}",
+                    $"The price source returned an error: {error}"));
             var result = chart.GetProperty("result")[0];
             return ParseCandles(result);
         }
@@ -84,12 +87,16 @@ public sealed class MarketDataService
 }
 
 public sealed class MarketAccessForbiddenException()
-    : HttpRequestException("Akses harga ditolak sementara (HTTP 403) pada kedua endpoint. Retry otomatis akan memakai sesi request baru.")
+    : HttpRequestException(Loc.T(
+        "Akses harga ditolak sementara (HTTP 403) pada kedua endpoint. Retry otomatis akan memakai sesi request baru.",
+        "Price access was temporarily denied (HTTP 403) on both endpoints. Automatic retry will use a new request session."))
 {
 }
 
 public sealed class MarketRateLimitException(TimeSpan? retryAfter)
-    : HttpRequestException("Sumber data membatasi request (HTTP 429).")
+    : HttpRequestException(Loc.T(
+        "Sumber data membatasi request (HTTP 429).",
+        "The data source is rate-limiting requests (HTTP 429)."))
 {
     public TimeSpan? RetryAfter { get; } = retryAfter;
 }

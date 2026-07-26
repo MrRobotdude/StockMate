@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Maui.ApplicationModel;
 using StockMate.Services;
 using StockMate.Models;
+using StockMate.Ui;
 using System.Runtime.Versioning;
 using System.Text.Json;
 
@@ -27,24 +28,46 @@ public static class ScanServiceBridge
 
     public static void OpenNotificationSettings()
     {
-        var context = global::Android.App.Application.Context;
-        var intent = new Intent(global::Android.Provider.Settings.ActionAppNotificationSettings)
-            .PutExtra(global::Android.Provider.Settings.ExtraAppPackage, context.PackageName)
-            .AddFlags(ActivityFlags.NewTask);
-        context.StartActivity(intent);
+        try
+        {
+            var context = global::Android.App.Application.Context;
+            var intent = new Intent(
+                    global::Android.Provider.Settings.ActionAppNotificationSettings)
+                .PutExtra(
+                    global::Android.Provider.Settings.ExtraAppPackage,
+                    context.PackageName)
+                .AddFlags(ActivityFlags.NewTask);
+            context.StartActivity(intent);
+        }
+        catch (Exception ex)
+        {
+            global::Android.Util.Log.Warn(
+                "StockMateNotifications", ex.ToString());
+        }
     }
 
     public static Task<bool> StartAsync(bool intraday, bool forceRefresh, bool downloadOnly = false)
     {
         if (IsRunning) return _completion?.Task ?? WaitForCurrentRunAsync();
         _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        var context = global::Android.App.Application.Context;
-        var intent = new Intent(context, typeof(ScanForegroundService));
-        intent.PutExtra("intraday", intraday);
-        intent.PutExtra("force", forceRefresh);
-        intent.PutExtra("downloadOnly", downloadOnly);
-        if (Build.VERSION.SdkInt >= BuildVersionCodes.O) context.StartForegroundService(intent);
-        else context.StartService(intent);
+        try
+        {
+            var context = global::Android.App.Application.Context;
+            var intent = new Intent(context, typeof(ScanForegroundService));
+            intent.PutExtra("intraday", intraday);
+            intent.PutExtra("force", forceRefresh);
+            intent.PutExtra("downloadOnly", downloadOnly);
+            if (Build.VERSION.SdkInt >= BuildVersionCodes.O)
+                context.StartForegroundService(intent);
+            else
+                context.StartService(intent);
+        }
+        catch (Exception ex)
+        {
+            Complete(false, Loc.T(
+                $"Layanan background tidak dapat dimulai: {ex.Message}",
+                $"The background service could not start: {ex.Message}"));
+        }
         return _completion.Task;
     }
 
@@ -58,9 +81,18 @@ public static class ScanServiceBridge
     public static void Stop()
     {
         if (!IsRunning) return;
-        var context = global::Android.App.Application.Context;
-        context.StartService(new Intent(context, typeof(ScanForegroundService))
-            .SetAction(ScanForegroundService.StopAction));
+        try
+        {
+            var context = global::Android.App.Application.Context;
+            context.StartService(
+                new Intent(context, typeof(ScanForegroundService))
+                    .SetAction(ScanForegroundService.StopAction));
+        }
+        catch (Exception ex)
+        {
+            global::Android.Util.Log.Warn(
+                "StockMateScannerStop", ex.ToString());
+        }
     }
 
     internal static void Report(ScanProgress progress)
@@ -94,7 +126,21 @@ public static class ScanServiceBridge
         if (important || nowTicks - _lastUiReportTicks >= 150)
         {
             _lastUiReportTicks = nowTicks;
-            MainThread.BeginInvokeOnMainThread(() => ProgressChanged?.Invoke(progress));
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                var handlers = ProgressChanged?.GetInvocationList();
+                if (handlers is null) return;
+                foreach (var handler in handlers)
+                    try
+                    {
+                        ((Action<ScanProgress>)handler)(progress);
+                    }
+                    catch
+                    {
+                        // A page can disappear while a progress callback is
+                        // queued. One stale listener must not crash the service.
+                    }
+            });
         }
     }
 
@@ -160,72 +206,168 @@ public sealed class ScanForegroundService : Service
 
     public override StartCommandResult OnStartCommand(Intent? intent, StartCommandFlags flags, int startId)
     {
-        if (intent?.Action == StopAction)
+        try
         {
-            _cts?.Cancel();
+            if (intent?.Action == StopAction)
+            {
+                _cts?.Cancel();
+                return StartCommandResult.NotSticky;
+            }
+            var intraday =
+                intent?.GetBooleanExtra("intraday", false) ?? false;
+            var force =
+                intent?.GetBooleanExtra("force", false) ?? false;
+            var scheduled =
+                intent?.GetBooleanExtra("scheduled", false) ?? false;
+            var downloadOnly =
+                intent?.GetBooleanExtra("downloadOnly", false) ?? false;
+            var eventOnly =
+                intent?.GetBooleanExtra("eventOnly", false) ?? false;
+            if (ScanServiceBridge.IsRunning)
+            {
+                // Android can deliver the 08:45 or midday alarm while the
+                // morning universe download is still running. Do not silently
+                // drop that scheduled work.
+                if (scheduled)
+                {
+                    if (eventOnly)
+                        BackgroundScanScheduler.ScheduleEventRetry(
+                            this, TimeSpan.FromMinutes(10));
+                    else
+                        BackgroundScanScheduler.ScheduleRetry(
+                            this, intraday, TimeSpan.FromMinutes(10));
+                }
+                return StartCommandResult.Sticky;
+            }
+            ScanServiceBridge.IsRunning = true;
+            _cts = new();
+            // A cold background launch happens before MAUI creates a page.
+            // Restore the selected language before showing the mandatory
+            // foreground notification.
+            Loc.Use(Preferences.Default.Get("app.language", "id"));
+            CreateChannel();
+            AcquireWakeLock();
+            StartForeground(NotificationId,
+                BuildNotification(Loc.T(
+                    "Menyiapkan scanner…",
+                    "Preparing scanner…")));
+            // A Service starts on Android's main looper. Run the complete
+            // network pipeline on a worker. Do not pass the token to Task.Run:
+            // a pre-cancelled token would skip RunAsync and its cleanup.
+            _ = Task.Run(() => RunAsync(
+                intraday, force, scheduled, downloadOnly,
+                eventOnly, _cts.Token));
+            return StartCommandResult.RedeliverIntent;
+        }
+        catch (Exception ex)
+        {
+            ScanServiceBridge.Complete(false, Loc.T(
+                $"Scanner gagal dimulai: {ex.Message}",
+                $"Scanner failed to start: {ex.Message}"));
+            ReleaseWakeLock();
+            StopSelf(startId);
             return StartCommandResult.NotSticky;
         }
-        if (ScanServiceBridge.IsRunning) return StartCommandResult.Sticky;
-        ScanServiceBridge.IsRunning = true;
-        _cts = new();
-        CreateChannel();
-        AcquireWakeLock();
-        StartForeground(NotificationId, BuildNotification("Menyiapkan scanner…"));
-        var intraday = intent?.GetBooleanExtra("intraday", false) ?? false;
-        var force = intent?.GetBooleanExtra("force", false) ?? false;
-        var scheduled = intent?.GetBooleanExtra("scheduled", false) ?? false;
-        var downloadOnly = intent?.GetBooleanExtra("downloadOnly", false) ?? false;
-        var eventOnly = intent?.GetBooleanExtra("eventOnly", false) ?? false;
-        // A Service starts on Android's main looper. Run the complete network
-        // pipeline on a worker so no handler can perform network I/O on it.
-        _ = Task.Run(() => RunAsync(intraday, force, scheduled, downloadOnly, eventOnly, _cts.Token), _cts.Token);
-        // If Android kills the process under memory pressure, redeliver the
-        // original intent. The download pipeline is idempotent and reuses its
-        // cache/checkpoint, so a restarted run continues safely.
-        return StartCommandResult.RedeliverIntent;
     }
 
     async Task RunAsync(
         bool intraday, bool force, bool scheduled, bool downloadOnly,
         bool eventOnly, CancellationToken ct)
     {
-        var finalTitle = "StockMate scanner selesai";
-        var finalMessage = "Proses selesai.";
+        var finalTitle = Loc.T(
+            "StockMate scanner selesai",
+            "StockMate scanner completed");
+        var finalMessage = Loc.T(
+            "Proses selesai.",
+            "Process completed.");
         try
         {
             var services = IPlatformApplication.Current?.Services
-                ?? throw new InvalidOperationException("Service aplikasi tidak tersedia.");
+                ?? throw new InvalidOperationException(Loc.T(
+                    "Service aplikasi tidak tersedia.",
+                    "Application services are unavailable."));
             var engine = services.GetService<ScanEngine>()
-                ?? throw new InvalidOperationException("ScanEngine tidak tersedia.");
+                ?? throw new InvalidOperationException(Loc.T(
+                    "ScanEngine tidak tersedia.",
+                    "ScanEngine is unavailable."));
             var data = services.GetService<AppDataService>()
-                ?? throw new InvalidOperationException("Penyimpanan aplikasi tidak tersedia.");
+                ?? throw new InvalidOperationException(Loc.T(
+                    "Penyimpanan aplikasi tidak tersedia.",
+                    "Application storage is unavailable."));
             await data.LoadAsync();
+            Loc.Use(data.State.LanguageCode);
+            finalTitle = Loc.T(
+                "StockMate scanner selesai",
+                "StockMate scanner completed");
+            finalMessage = Loc.T("Proses selesai.", "Process completed.");
             var eventIntel = services.GetService<EventIntelligenceService>();
             if (eventOnly)
             {
                 if (!data.State.AutoEventIntelligence)
                 {
-                    finalMessage = "Analisis isu otomatis nonaktif.";
+                    finalMessage = Loc.T(
+                        "Analisis isu otomatis nonaktif.",
+                        "Automatic event analysis is disabled.");
                     ScanServiceBridge.Complete(true, finalMessage);
                     return;
                 }
                 UpdateNotification(new()
                 {
                     Stage = "EVENTS",
-                    Message = "Memeriksa isu pasar, portofolio, dan kandidat teratas"
+                    Message = Loc.T(
+                        "Memeriksa isu pasar, portofolio, dan kandidat teratas",
+                        "Checking market events, portfolio, and top candidates")
                 });
                 var count = eventIntel is null ? 0 : await eventIntel.RefreshAsync(ct);
+                var snapshot = engine.GetLatestSnapshot();
+                var recommendationMessage = Loc.T(
+                    "Belum ada snapshot lengkap untuk memeriksa ulang rekomendasi.",
+                    "There is no complete snapshot available to recheck recommendations.");
+                if (snapshot is { IsComplete: true })
+                {
+                    UpdateNotification(new()
+                    {
+                        Stage = "ANALYZE",
+                        Message = Loc.T(
+                            "Memeriksa ulang dan membatalkan rekomendasi yang sudah tidak valid",
+                            "Rechecking and cancelling recommendations that are no longer valid")
+                    });
+                    var eventProgress =
+                        new DirectProgress<ScanProgress>(UpdateNotification);
+                    await engine.AnalyzeAsync(
+                        snapshot.Session == "LUNCH",
+                        snapshot,
+                        true,
+                        eventProgress,
+                        ct);
+                    var cancelled = data.State.ScanHistory
+                        .LastOrDefault(x =>
+                            x.SessionKey == snapshot.SessionKey &&
+                            x.StrategyVersion == data.State.Strategy.Version)?
+                        .Predictions.Count(x => x.Outcome == "CANCELLED") ?? 0;
+                    recommendationMessage = Loc.T(
+                        $"Rekomendasi diperiksa ulang; {cancelled} order dibatalkan.",
+                        $"Recommendations were rechecked; {cancelled} orders were cancelled.");
+                }
                 var eventDecisions = services.GetService<PortfolioDecisionService>();
                 if (eventDecisions is not null) await eventDecisions.RebuildAsync();
-                finalTitle = "Analisis isu StockMate selesai";
-                finalMessage = $"{count} berita relevan diperbarui. Buka detail saham untuk dampaknya.";
+                finalTitle = Loc.T(
+                    "Analisis isu StockMate selesai",
+                    "StockMate event analysis completed");
+                finalMessage = Loc.T(
+                    $"{count} berita relevan diperbarui. {recommendationMessage}",
+                    $"{count} relevant news items were updated. {recommendationMessage}");
                 ScanServiceBridge.Complete(true, finalMessage);
                 return;
             }
             if (scheduled && !data.State.AutoScanAfterClose)
             {
-                finalTitle = "StockMate scan otomatis nonaktif";
-                finalMessage = "Jadwal dilewati karena scan closing otomatis dimatikan.";
+                finalTitle = Loc.T(
+                    "StockMate scan otomatis nonaktif",
+                    "StockMate automatic scan is disabled");
+                finalMessage = Loc.T(
+                    "Jadwal dilewati karena scan closing otomatis dimatikan.",
+                    "The schedule was skipped because automatic closing scans are disabled.");
                 ScanServiceBridge.Complete(true, finalMessage);
                 return;
             }
@@ -236,48 +378,82 @@ public sealed class ScanForegroundService : Service
                 snapshot = await engine.RefreshMarketDataAsync(
                     intraday, force, progress, ct, requireVerifiedClosing: scheduled);
                 finalMessage =
-                    $"Data siap • {snapshot.Symbols.Count}/{snapshot.RequestedCount} saham. Buka Scanner untuk analisis.";
+                    Loc.T(
+                        $"Data siap • {snapshot.Symbols.Count}/{snapshot.RequestedCount} saham. Buka Scanner untuk analisis.",
+                        $"Data ready • {snapshot.Symbols.Count}/{snapshot.RequestedCount} stocks. Open Scanner to analyze.");
             }
             else
             {
-                var result = await engine.RunAsync(
-                    intraday, force, progress, ct, requireVerifiedClosing: scheduled);
-                snapshot = result.Snapshot
-                    ?? throw new InvalidOperationException("Scanner selesai tanpa snapshot.");
-                var decisions = services.GetService<PortfolioDecisionService>();
-                if (decisions is not null) await decisions.RebuildAsync();
-                if (data.State.AutoEventIntelligence && eventIntel is not null)
+                if (data.State.AutoEventIntelligence &&
+                    eventIntel is not null)
                 {
                     UpdateNotification(new()
                     {
                         Stage = "EVENTS",
-                        Message = "Memperbarui isu setelah closing"
+                        Message = Loc.T(
+                            "Memperbarui isu pasar sebelum analisis",
+                            "Updating market events before analysis")
                     });
-                    await eventIntel.RefreshAsync(ct);
-                    if (decisions is not null) await decisions.RebuildAsync();
+                    try
+                    {
+                        await eventIntel.RefreshAsync(ct);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        // News is a defensive veto layer. A feed outage must
+                        // not destroy an otherwise valid technical snapshot.
+                        global::Android.Util.Log.Warn(
+                            "StockMateEvents", ex.ToString());
+                    }
                 }
+                var result = await engine.RunAsync(
+                    intraday, force, progress, ct, requireVerifiedClosing: scheduled);
+                snapshot = result.Snapshot
+                    ?? throw new InvalidOperationException(Loc.T(
+                        "Scanner selesai tanpa snapshot.",
+                        "The scanner completed without a snapshot."));
+                var decisions = services.GetService<PortfolioDecisionService>();
+                if (decisions is not null) await decisions.RebuildAsync();
                 finalMessage =
-                    $"Scan selesai • {snapshot.Symbols.Count}/{snapshot.RequestedCount} saham";
+                    Loc.T(
+                        $"Scan selesai • {snapshot.Symbols.Count}/{snapshot.RequestedCount} saham",
+                        $"Scan completed • {snapshot.Symbols.Count}/{snapshot.RequestedCount} stocks");
             }
             ScanServiceBridge.Complete(true, finalMessage);
         }
         catch (ClosingDataNotReadyException ex)
         {
             BackgroundScanScheduler.ScheduleRetry(this, intraday, TimeSpan.FromMinutes(10));
-            finalTitle = "StockMate menunggu data closing";
-            finalMessage = $"{ex.Message} Cek ulang otomatis 10 menit lagi.";
+            finalTitle = Loc.T(
+                "StockMate menunggu data closing",
+                "StockMate is waiting for closing data");
+            finalMessage = Loc.T(
+                $"{ex.Message} Cek ulang otomatis 10 menit lagi.",
+                $"{ex.Message} An automatic retry will run in 10 minutes.");
             ScanServiceBridge.Complete(true, finalMessage);
         }
         catch (System.OperationCanceledException)
         {
-            finalTitle = "StockMate scanner dihentikan";
-            finalMessage = "Scan dihentikan. Progres terakhir tetap tersimpan.";
+            finalTitle = Loc.T(
+                "StockMate scanner dihentikan",
+                "StockMate scanner stopped");
+            finalMessage = Loc.T(
+                "Scan dihentikan. Progres terakhir tetap tersimpan.",
+                "The scan was stopped. The latest progress remains saved.");
             ScanServiceBridge.Complete(false, finalMessage);
         }
         catch (Exception ex)
         {
-            finalTitle = "StockMate scanner gagal";
-            finalMessage = $"Scan gagal: {ex.Message}";
+            finalTitle = Loc.T(
+                "StockMate scanner gagal",
+                "StockMate scanner failed");
+            finalMessage = Loc.T(
+                $"Scan gagal: {ex.Message}",
+                $"Scan failed: {ex.Message}");
             ScanServiceBridge.Complete(false, finalMessage);
         }
         finally
@@ -310,19 +486,55 @@ public sealed class ScanForegroundService : Service
 
     Notification BuildNotification(ScanProgress progress)
     {
+        var text = NotificationText(progress);
         var builder = new NotificationCompat.Builder(this, ProgressChannelId)
-            .SetContentTitle("StockMate sedang mengambil data")
-            .SetContentText(progress.DisplayText)
-            .SetStyle(new NotificationCompat.BigTextStyle().BigText(progress.DisplayText))
+            .SetContentTitle(Loc.T(
+                "StockMate sedang mengambil data",
+                "StockMate is fetching data"))
+            .SetContentText(text)
+            .SetStyle(new NotificationCompat.BigTextStyle().BigText(text))
             .SetSmallIcon(Resource.Mipmap.appicon)
             .SetContentIntent(BuildContentIntent())
-            .AddAction(0, "Hentikan", BuildStopIntent())
+            .AddAction(0, Loc.T("Hentikan", "Stop"), BuildStopIntent())
             .SetCategory(NotificationCompat.CategoryProgress)
             .SetPriority(NotificationCompat.PriorityDefault)
             .SetOnlyAlertOnce(true)
             .SetOngoing(true);
         builder.SetProgress(progress.Total, progress.Completed, progress.IsIndeterminate);
-        return builder.Build() ?? throw new InvalidOperationException("Notifikasi foreground gagal dibuat.");
+        return builder.Build() ?? throw new InvalidOperationException(Loc.T(
+            "Notifikasi foreground gagal dibuat.",
+            "The foreground notification could not be created."));
+    }
+
+    static string NotificationText(ScanProgress progress)
+    {
+        var message = Loc.English
+            ? progress.Stage switch
+            {
+                "PREPARING" => "Preparing scanner",
+                "UNIVERSE" or "UNIVERSE_REQUEST" or "UNIVERSE_PARSE" =>
+                    "Updating IDX universe",
+                "UNIVERSE_READY" => "IDX universe ready",
+                "BATCH_PLAN" => "Preparing download batches",
+                "DOWNLOAD" or "REQUEST_START" => "Fetching price data",
+                "REQUEST_OK" => "Price data received",
+                "REQUEST_ERROR" => "Price request failed; continuing",
+                "RETRY" => "Retrying price request",
+                "RATE_LIMIT" => "Waiting for data-source rate limit",
+                "WAITING_CLOSE" => "Verifying closing data",
+                "EVENTS" => "Updating market events",
+                "ANALYZE" => "Analyzing candidates",
+                "SAVING" => "Saving results",
+                "COMPLETE" => "Process completed",
+                "ERROR" => "Process failed",
+                _ => Loc.T(progress.Message)
+            }
+            : progress.Message;
+        return progress.Total <= 0
+            ? message
+            : Loc.T(
+                $"{message} • {progress.Completed}/{progress.Total} ({progress.Percent}%) • berhasil {progress.Succeeded} • gagal {progress.Failed}",
+                $"{message} • {progress.Completed}/{progress.Total} ({progress.Percent}%) • {progress.Succeeded} succeeded • {progress.Failed} failed");
     }
 
     void PublishFinalNotification(string title, string text)
@@ -365,15 +577,23 @@ public sealed class ScanForegroundService : Service
         if (Build.VERSION.SdkInt < BuildVersionCodes.O) return;
         var manager = (NotificationManager)GetSystemService(NotificationService)!;
         var progress = new NotificationChannel(
-            ProgressChannelId, "Progres pengambilan data", NotificationImportance.Default)
+            ProgressChannelId,
+            Loc.T("Progres pengambilan data", "Data-fetch progress"),
+            NotificationImportance.Default)
         {
-            Description = "Progres aktif saat StockMate mengambil dan menganalisis data pasar"
+            Description = Loc.T(
+                "Progres aktif saat StockMate mengambil dan menganalisis data pasar",
+                "Active progress while StockMate fetches and analyzes market data")
         };
         progress.EnableVibration(true);
         var result = new NotificationChannel(
-            ResultChannelId, "Hasil proses StockMate", NotificationImportance.High)
+            ResultChannelId,
+            Loc.T("Hasil proses StockMate", "StockMate process results"),
+            NotificationImportance.High)
         {
-            Description = "Pemberitahuan saat pengambilan data selesai atau gagal"
+            Description = Loc.T(
+                "Pemberitahuan saat pengambilan data selesai atau gagal",
+                "Alerts when data fetching completes or fails")
         };
         result.EnableVibration(true);
         manager.CreateNotificationChannel(progress);

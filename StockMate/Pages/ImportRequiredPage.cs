@@ -8,14 +8,14 @@ public sealed class ImportRequiredPage : ContentPage
     readonly AppDataService _data;
     readonly TransactionHistoryService _history;
     readonly Label _status = UiKit.Sub(
-        "StockMate tidak menggunakan portofolio contoh. Impor e-Statement Stockbit untuk mulai membangun posisi dan riwayat transaksi.");
+        Loc.T("StockMate tidak menggunakan portofolio contoh. Impor e-Statement Stockbit untuk mulai membangun posisi dan riwayat transaksi."));
     readonly Button _import = UiKit.Primary("Impor e-Statement Stockbit");
 
     public ImportRequiredPage(AppDataService data, TransactionHistoryService history)
     {
         _data = data;
         _history = history;
-        Title = "Mulai";
+        Title = Loc.T("Mulai", "Start");
         BackgroundColor = UiKit.Navy;
 
         _import.Clicked += async (_, _) => await ImportAsync();
@@ -53,12 +53,12 @@ public sealed class ImportRequiredPage : ContentPage
         {
             var file = await FilePicker.Default.PickAsync(new PickOptions
             {
-                PickerTitle = "Pilih e-Statement PDF Stockbit"
+                PickerTitle = Loc.T("Pilih e-Statement PDF Stockbit")
             });
             if (file is null) return;
 
             _import.IsEnabled = false;
-            _status.Text = "Membaca dan memvalidasi e-Statement…";
+            _status.Text = Loc.T("Membaca dan memvalidasi e-Statement…");
             var result = await _history.ImportAsync(file);
             if (!result.Ok)
             {
@@ -70,14 +70,18 @@ public sealed class ImportRequiredPage : ContentPage
             _data.RebuildPositions();
             _status.Text = result.Message;
             await AppDialog.ShowAsync(this, "Impor berhasil",
-                $"{result.Message}\n\nTahap berikutnya: Sync Up saldo kas Stockbit saat ini.",
+                Loc.T(
+                    $"{result.Message}\n\nTahap berikutnya: Sync Up saldo kas Stockbit saat ini.",
+                    $"{result.Message}\n\nNext: Sync Up the current Stockbit cash balance."),
                 "Sync Up");
             if (Window is not null)
                 Window.Page = new SyncUpPage(_data);
         }
         catch (Exception ex)
         {
-            _status.Text = $"File tidak dapat diproses: {ex.Message}";
+            _status.Text = Loc.T(
+                $"File tidak dapat diproses: {ex.Message}",
+                $"The file could not be processed: {ex.Message}");
             await AppDialog.ShowAsync(this, "Impor gagal", _status.Text, danger:true);
         }
         finally

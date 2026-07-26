@@ -11,31 +11,33 @@ public sealed class ScannerPage : ContentPage
     readonly ScanEngine _engine;
     readonly PortfolioDecisionService _decisions;
     readonly VerticalStackLayout _results = new() { Spacing=10 };
-    readonly Label _status = UiKit.Sub("Pilih scan siang atau malam.");
-    readonly Label _phase = new() { Text = "Belum berjalan", TextColor = Colors.White, FontAttributes = FontAttributes.Bold, FontSize = 16 };
-    readonly Label _current = UiKit.Sub("Tahap dan saham yang diproses akan tampil di sini.");
-    readonly Label _counts = UiKit.Sub("0/0 saham • berhasil 0 • gagal 0");
-    readonly Label _batch = UiKit.Sub("Batch belum dimulai.");
+    readonly Label _status = UiKit.Sub(Loc.T("Pilih scan siang atau malam."));
+    readonly Label _phase = new() { Text = Loc.T("Belum berjalan"), TextColor = Colors.White, FontAttributes = FontAttributes.Bold, FontSize = 16 };
+    readonly Label _current = UiKit.Sub(Loc.T("Tahap dan saham yang diproses akan tampil di sini."));
+    readonly Label _counts = UiKit.Sub(Loc.T(
+        "0/0 saham • berhasil 0 • gagal 0",
+        "0/0 stocks • 0 succeeded • 0 failed"));
+    readonly Label _batch = UiKit.Sub(Loc.T("Batch belum dimulai."));
     readonly Label _percent = new() { Text = "0%", TextColor = UiKit.Blue, FontAttributes = FontAttributes.Bold, HorizontalOptions = LayoutOptions.End };
     readonly ProgressBar _progress = new() { Progress = 0, IsVisible = true, ProgressColor = UiKit.Blue };
     readonly Button _stop = new()
     {
-        Text = "Hentikan scan", BackgroundColor = UiKit.Red, TextColor = Colors.White,
+        Text = Loc.T("Hentikan scan"), BackgroundColor = UiKit.Red, TextColor = Colors.White,
         CornerRadius = 14, HeightRequest = 48, IsVisible = false
     };
     readonly VerticalStackLayout _technicalLog = new() { Spacing = 5, IsVisible = false };
     readonly VerticalStackLayout _technicalItems = new() { Spacing = 5 };
     readonly List<TechnicalEntry> _technicalEntries = [];
-    readonly Picker _technicalFilter = new() { Title = "Semua proses" };
+    readonly Picker _technicalFilter = new() { Title = Loc.T("Semua proses") };
     readonly Label _technicalPageInfo = UiKit.Sub("");
     readonly Button _technicalPrevious = UiKit.Secondary("← " + Loc.T("Sebelumnya", "Previous"));
     readonly Button _technicalNext = UiKit.Secondary(Loc.T("Berikutnya", "Next") + " →");
     readonly Grid _technicalPager;
     int _technicalPage = 1;
     const int TechnicalPageSize = 10;
-    readonly SearchBar _search = new() { Placeholder = "Cari kode saham…" };
-    readonly Picker _verdictFilter = new() { Title = "Semua rekomendasi" };
-    readonly Picker _sort = new() { Title = "Urutkan" };
+    readonly SearchBar _search = new() { Placeholder = Loc.T("Cari kode saham…") };
+    readonly Picker _verdictFilter = new() { Title = Loc.T("Semua rekomendasi") };
+    readonly Picker _sort = new() { Title = Loc.T("Urutkan") };
     readonly Label _closingInfo = UiKit.Sub("");
     readonly Label _resultSummary = UiKit.Sub("");
     readonly Label _pageInfo = UiKit.Sub("");
@@ -54,11 +56,35 @@ public sealed class ScannerPage : ContentPage
         _data=data; _engine=engine; _decisions=decisions;
         Title="Scanner"; BackgroundColor=UiKit.Navy;
         _technicalPager = UiKit.Pager(_technicalPrevious, _technicalPageInfo, _technicalNext);
-        _verdictFilter.ItemsSource = new[] { "Shortlist rekomendasi", "Semua hasil analisis", "BUY AREA", "WATCH", "WAIT", "LOT 0", "Bisa dieksekusi", "Spekulatif", "Non-spekulatif" };
+        _verdictFilter.ItemsSource = new[]
+        {
+            Loc.T("Shortlist rekomendasi", "Recommendation shortlist"),
+            Loc.T("Semua hasil analisis", "All analysis results"),
+            Loc.T("BELI", "BUY"), Loc.T("PANTAU", "WATCH"),
+            Loc.T("TUNGGU", "WAIT"), "0 LOT",
+            Loc.T("Bisa dieksekusi", "Executable"),
+            Loc.T("Spekulatif", "Speculative"),
+            Loc.T("Non-spekulatif", "Non-speculative")
+        };
         _verdictFilter.SelectedIndex = 0;
-        _technicalFilter.ItemsSource = new[] { "Semua proses", "Berhasil", "Gagal / retry", "Universe", "Download", "Analisis" };
+        _technicalFilter.ItemsSource = new[]
+        {
+            Loc.T("Semua proses", "All processes"),
+            Loc.T("Berhasil", "Succeeded"),
+            Loc.T("Gagal / retry", "Failed / retry"),
+            "Universe", "Download", Loc.T("Analisis", "Analysis")
+        };
         _technicalFilter.SelectedIndex = 0;
-        _sort.ItemsSource = new[] { "Prioritas rekomendasi", "Risk/reward terbaik", "Potensi kenaikan target", "Risiko harga terkecil", "Lot rekomendasi terbesar", "Harga termurah", "Kode A–Z" };
+        _sort.ItemsSource = new[]
+        {
+            Loc.T("Prioritas rekomendasi", "Recommendation priority"),
+            Loc.T("Risk/reward terbaik", "Best risk/reward"),
+            Loc.T("Potensi kenaikan target", "Largest target upside"),
+            Loc.T("Risiko harga terkecil", "Smallest price risk"),
+            Loc.T("Lot rekomendasi terbesar", "Largest recommended lot count"),
+            Loc.T("Harga termurah", "Lowest price"),
+            Loc.T("Kode A–Z", "Symbol A–Z")
+        };
         _sort.SelectedIndex = 0;
         _search.TextChanged += (_, _) => { _page = 1; Render(_data.State.LastScan); };
         _verdictFilter.SelectedIndexChanged += (_, _) => { _page = 1; Render(_data.State.LastScan); };
@@ -72,7 +98,7 @@ public sealed class ScannerPage : ContentPage
         _stop.Clicked += (_, _) =>
         {
             _stop.IsEnabled = false;
-            _status.Text = "Menghentikan scanner dengan aman…";
+            _status.Text = Loc.T("Menghentikan scanner dengan aman…");
             ScanServiceBridge.Stop();
         };
         var grid=new Grid
@@ -93,8 +119,8 @@ public sealed class ScannerPage : ContentPage
         };
         var root=UiKit.PageStack();
         root.Children.Add(UiKit.Heading(this, "Peluang terbaik", "Best opportunities",
-            "Tahap 1 mengambil data pasar dari internet dan menyimpannya sebagai snapshot. Tahap 2 menjalankan strategi aktif—termasuk hasil training terbaru—tanpa mengunduh ulang data.",
-            "Step 1 downloads market data and stores a snapshot. Step 2 runs the active strategy—including the latest trained strategy—without downloading the data again."));
+            "Tahap 1 mengambil data pasar dan menyimpannya sebagai snapshot. Tahap 2 menjalankan strategi aktif tanpa mengunduh ulang. Model hanya dipakai bila bundle trainer berstatus READY_FOR_FORWARD_TEST.",
+            "Step 1 downloads market data and stores a snapshot. Step 2 runs the active strategy without downloading again. A model is used only when its trainer bundle is READY_FOR_FORWARD_TEST."));
         root.Children.Add(_closingInfo);
         root.Children.Add(UiKit.Box(new VerticalStackLayout
         {
@@ -132,8 +158,8 @@ public sealed class ScannerPage : ContentPage
         {
             _technicalLog.IsVisible = !_technicalLog.IsVisible;
             technicalToggle.Text = _technicalLog.IsVisible
-                ? "Sembunyikan proses teknis"
-                : "Lihat proses teknis";
+                ? Loc.T("Sembunyikan proses teknis")
+                : Loc.T("Lihat proses teknis");
         };
         root.Children.Add(UiKit.Box(new VerticalStackLayout
         {
@@ -174,40 +200,67 @@ public sealed class ScannerPage : ContentPage
         Content=new ScrollView { Content=root };
         Appearing += async (_,_) =>
         {
-            ScanServiceBridge.ProgressChanged -= OnProgress;
-            ScanServiceBridge.ProgressChanged += OnProgress;
-            if (ScanServiceBridge.IsRunning ||
-                ScanServiceBridge.CurrentProgress.Stage is "COMPLETE" or "ERROR")
-                OnProgress(ScanServiceBridge.CurrentProgress);
-            ShowPerformance();
-            UpdateClosingInfo();
-            await _decisions.RebuildAsync();
-            Render(_data.State.LastScan);
+            try
+            {
+                ScanServiceBridge.ProgressChanged -= OnProgress;
+                ScanServiceBridge.ProgressChanged += OnProgress;
+                if (ScanServiceBridge.IsRunning ||
+                    ScanServiceBridge.CurrentProgress.Stage is "COMPLETE" or "ERROR")
+                    OnProgress(ScanServiceBridge.CurrentProgress);
+                ShowPerformance();
+                UpdateClosingInfo();
+                await _decisions.RebuildAsync();
+                Render(_data.State.LastScan);
+            }
+            catch (Exception ex)
+            {
+                _status.Text = Loc.T(
+                    $"Scanner tidak dapat menyiapkan halaman: {ex.Message}",
+                    $"The scanner page could not be prepared: {ex.Message}");
+            }
         };
         Disappearing += (_,_) => ScanServiceBridge.ProgressChanged -= OnProgress;
     }
 
     void OnProgress(ScanProgress progress)
     {
+        if (!MainThread.IsMainThread)
+        {
+            MainThread.BeginInvokeOnMainThread(() => OnProgress(progress));
+            return;
+        }
         _phase.Text = StageName(progress.Stage);
         _current.Text = string.IsNullOrWhiteSpace(progress.CurrentSymbol)
-            ? progress.Message
-            : $"{progress.Message} • sekarang: {progress.CurrentSymbol}";
+            ? LocalizeProgress(progress)
+            : Loc.T(
+                $"{LocalizeProgress(progress)} • sekarang: {progress.CurrentSymbol}",
+                $"{LocalizeProgress(progress)} • current: {progress.CurrentSymbol}");
         _counts.Text = progress.Total <= 0
-            ? "Menyiapkan jumlah pekerjaan…"
-            : $"{progress.Completed}/{progress.Total} saham • berhasil {progress.Succeeded} • gagal {progress.Failed}";
+            ? Loc.T(
+                "Menyiapkan jumlah pekerjaan…",
+                "Preparing the workload…")
+            : Loc.T(
+                $"{progress.Completed}/{progress.Total} saham • berhasil {progress.Succeeded} • gagal {progress.Failed}",
+                $"{progress.Completed}/{progress.Total} stocks • {progress.Succeeded} succeeded • {progress.Failed} failed");
         _batch.Text = progress.TotalBatches <= 0
-            ? "Batch akan dibentuk setelah universe siap."
-            : $"Batch {progress.CurrentBatch}/{progress.TotalBatches} • {progress.BatchCompleted}/{progress.BatchSize} saham" +
+            ? Loc.T(
+                "Batch akan dibentuk setelah universe siap.",
+                "Batches will be created after the universe is ready.")
+            : Loc.T(
+                $"Batch {progress.CurrentBatch}/{progress.TotalBatches} • {progress.BatchCompleted}/{progress.BatchSize} saham" +
               (progress.LastCompletedBatch > 0
                   ? $" • batch {progress.LastCompletedBatch} sudah selesai"
-                  : "");
+                  : ""),
+                $"Batch {progress.CurrentBatch}/{progress.TotalBatches} • {progress.BatchCompleted}/{progress.BatchSize} stocks" +
+              (progress.LastCompletedBatch > 0
+                  ? $" • batch {progress.LastCompletedBatch} completed"
+                  : ""));
         _percent.Text = progress.Total <= 0 ? "…" : $"{progress.Percent}%";
         _progress.Progress = progress.Total <= 0 ? 0 : progress.Completed / (double)progress.Total;
         AddTechnicalLog(progress);
         if (progress.Stage is "COMPLETE" or "ERROR")
         {
-            _status.Text = progress.Message;
+            _status.Text = LocalizeProgress(progress);
             _stop.IsVisible = false;
             _stop.IsEnabled = true;
             Render(_data.State.LastScan);
@@ -221,12 +274,16 @@ public sealed class ScannerPage : ContentPage
 
     void AddTechnicalLog(ScanProgress progress)
     {
-        var detail = string.IsNullOrWhiteSpace(progress.TechnicalDetail)
-            ? progress.Message
-            : progress.TechnicalDetail;
+        var detail = Loc.English
+            ? LocalizeProgress(progress)
+            : string.IsNullOrWhiteSpace(progress.TechnicalDetail)
+                ? progress.Message
+                : progress.TechnicalDetail;
         var source = string.IsNullOrWhiteSpace(progress.Source)
             ? ""
-            : $" • sumber {progress.Source}";
+            : Loc.T(
+                $" • sumber {progress.Source}",
+                $" • source {LocalizeSource(progress.Source)}");
         var attempt = progress.Attempt > 0 ? $" • attempt {progress.Attempt}" : "";
         var elapsed = progress.ElapsedMilliseconds > 0
             ? $" • {progress.ElapsedMilliseconds / 1000d:0.0}s"
@@ -241,13 +298,13 @@ public sealed class ScannerPage : ContentPage
     void RenderTechnicalLog()
     {
         IEnumerable<TechnicalEntry> query = _technicalEntries;
-        query = (_technicalFilter.SelectedItem?.ToString() ?? "Semua proses") switch
+        query = _technicalFilter.SelectedIndex switch
         {
-            "Berhasil" => query.Where(x => x.Stage is "REQUEST_OK" or "BATCH_COMPLETE" or "COMPLETE"),
-            "Gagal / retry" => query.Where(x => x.Stage is "REQUEST_ERROR" or "RETRY" or "RATE_LIMIT" or "FORBIDDEN_RETRY" or "ERROR"),
-            "Universe" => query.Where(x => x.Stage.Contains("UNIVERSE", StringComparison.OrdinalIgnoreCase)),
-            "Download" => query.Where(x => x.Stage is "DOWNLOAD" or "REQUEST_START" or "REQUEST_OK" or "BATCH_START" or "BATCH_COMPLETE"),
-            "Analisis" => query.Where(x => x.Stage is "ANALYZE" or "SAVING"),
+            1 => query.Where(x => x.Stage is "REQUEST_OK" or "BATCH_COMPLETE" or "COMPLETE"),
+            2 => query.Where(x => x.Stage is "REQUEST_ERROR" or "RETRY" or "RATE_LIMIT" or "FORBIDDEN_RETRY" or "ERROR"),
+            3 => query.Where(x => x.Stage.Contains("UNIVERSE", StringComparison.OrdinalIgnoreCase)),
+            4 => query.Where(x => x.Stage is "DOWNLOAD" or "REQUEST_START" or "REQUEST_OK" or "BATCH_START" or "BATCH_COMPLETE"),
+            5 => query.Where(x => x.Stage is "EVENTS" or "ANALYZE" or "SAVING"),
             _ => query
         };
         var filtered = query.Reverse().ToList();
@@ -262,7 +319,9 @@ public sealed class ScannerPage : ContentPage
                 FontSize = 12,
                 LineBreakMode = LineBreakMode.WordWrap
             });
-        _technicalPageInfo.Text = $"Halaman {_technicalPage}/{pages} • {filtered.Count} log";
+        _technicalPageInfo.Text = Loc.T(
+            $"Halaman {_technicalPage}/{pages} • {filtered.Count} log",
+            $"Page {_technicalPage}/{pages} • {filtered.Count} logs");
         _technicalPrevious.IsEnabled = _technicalPage > 1;
         _technicalNext.IsEnabled = _technicalPage < pages;
     }
@@ -276,19 +335,32 @@ public sealed class ScannerPage : ContentPage
             OnProgress(new ScanProgress
             {
                 Stage = "PREPARING",
-                Message = "Menyalakan layanan scanner. Layar boleh dimatikan."
+                Message = Loc.T(
+                    "Menyalakan layanan scanner. Layar boleh dimatikan.",
+                    "Starting the scanner service. The screen may be turned off.")
             });
-            _status.Text = "Progres juga tampil pada notifikasi Android.";
+            _status.Text = Loc.T("Progres juga tampil pada notifikasi Android.");
             await ScanServiceBridge.StartAsync(intraday, forceRefresh);
             var results = _data.State.LastScan;
             var snapshot = _engine.GetSnapshot(intraday);
-            _status.Text = snapshot is null ? "Snapshot belum tersedia."
-                : $"Selesai • {snapshot.Status} • {snapshot.Symbols.Count}/{snapshot.RequestedCount} saham • {results.Count} kandidat";
+            _status.Text = snapshot is null
+                ? Loc.T("Snapshot belum tersedia.", "Snapshot is unavailable.")
+                : Loc.T(
+                    $"Selesai • {snapshot.Status} • {snapshot.Symbols.Count}/{snapshot.RequestedCount} saham • {results.Count} kandidat",
+                    $"Complete • {snapshot.Status} • {snapshot.Symbols.Count}/{snapshot.RequestedCount} stocks • {results.Count} candidates");
             ShowPerformance();
             Render(results);
         }
-        catch(OperationCanceledException) { _status.Text="Scan dibatalkan."; }
-        catch(Exception ex) { _status.Text=$"Scan gagal: {ex.Message}"; }
+        catch(OperationCanceledException)
+        {
+            _status.Text = Loc.T("Scan dibatalkan.");
+        }
+        catch(Exception ex)
+        {
+            _status.Text = Loc.T(
+                $"Scan gagal: {ex.Message}",
+                $"Scan failed: {ex.Message}");
+        }
         finally { _cts.Dispose(); _cts=null; }
     }
 
@@ -302,16 +374,21 @@ public sealed class ScannerPage : ContentPage
             OnProgress(new ScanProgress
             {
                 Stage = "PREPARING",
-                Message = "Menyalakan layanan download. Aplikasi boleh ditutup."
+                Message = Loc.T(
+                    "Menyalakan layanan download. Aplikasi boleh ditutup.",
+                    "Starting the download service. The app may be closed.")
             });
-            _status.Text = "Progres tetap tampil di notifikasi Android saat aplikasi ditutup.";
+            _status.Text = Loc.T(
+                "Progres tetap tampil di notifikasi Android saat aplikasi ditutup.");
             var ok = await ScanServiceBridge.StartAsync(
                 intraday, forceRefresh, downloadOnly: true);
             if (!ok)
                 throw new InvalidOperationException(
                     ScanServiceBridge.CurrentProgress.Message);
             var snapshot = _engine.GetSnapshot(intraday)
-                ?? throw new InvalidOperationException("Download selesai tanpa snapshot.");
+                ?? throw new InvalidOperationException(Loc.T(
+                    "Download selesai tanpa snapshot.",
+                    "The download completed without a snapshot."));
             _status.Text = Loc.T(
                 $"Data siap • {snapshot.Symbols.Count}/{snapshot.RequestedCount} saham. Tekan Analisis snapshot.",
                 $"Data ready • {snapshot.Symbols.Count}/{snapshot.RequestedCount} stocks. Tap Analyze snapshot.");
@@ -367,29 +444,30 @@ public sealed class ScannerPage : ContentPage
 
     static string StageName(string stage) => stage switch
     {
-        "PREPARING" => "1/5 • Menyiapkan scanner",
-        "UNIVERSE" => "2/5 • Memperbarui daftar saham IDX",
-        "UNIVERSE_REQUEST" => "2/5 • Menghubungi IDX",
-        "UNIVERSE_PARSE" => "2/5 • Membaca respons IDX",
-        "UNIVERSE_READY" => "2/5 • Universe siap",
-        "UNIVERSE_FALLBACK" => "2/5 • Memakai cache universe",
-        "TRADING_DATE" => "2/5 • Menentukan closing acuan",
-        "BATCH_PLAN" => "3/5 • Membentuk batch",
-        "REQUEST_START" => "3/5 • Mengirim request harga",
-        "REQUEST_OK" => "3/5 • Data harga diterima",
-        "REQUEST_ERROR" => "3/5 • Request gagal, lanjut",
-        "RETRY" => "3/5 • Mencoba ulang request",
-        "CLOSING_FALLBACK" => "3/5 • Melanjutkan dengan data tersedia",
-        "WAITING_CLOSE" => "3/5 • Memastikan data closing tersedia",
-        "RATE_LIMIT" => "3/5 • Menunggu batas request",
-        "FORBIDDEN_RETRY" => "3/5 • Akses 403, mengganti endpoint",
-        "DOWNLOAD" => "3/5 • Mengambil data harga",
-        "BATCH_START" => "3/5 • Memulai batch pengambilan",
-        "BATCH_COMPLETE" => "3/5 • Batch selesai, lanjut berikutnya",
-        "ANALYZE" => "4/5 • Menganalisis seluruh saham",
-        "SAVING" => "5/5 • Menyimpan hasil",
-        "COMPLETE" => "Selesai",
-        "ERROR" => "Proses gagal",
+        "PREPARING" => Loc.T("1/5 • Menyiapkan scanner", "1/5 • Preparing scanner"),
+        "UNIVERSE" => Loc.T("2/5 • Memperbarui daftar saham IDX", "2/5 • Updating IDX universe"),
+        "UNIVERSE_REQUEST" => Loc.T("2/5 • Menghubungi IDX", "2/5 • Contacting IDX"),
+        "UNIVERSE_PARSE" => Loc.T("2/5 • Membaca respons IDX", "2/5 • Reading IDX response"),
+        "UNIVERSE_READY" => Loc.T("2/5 • Universe siap", "2/5 • Universe ready"),
+        "UNIVERSE_FALLBACK" => Loc.T("2/5 • Memakai cache universe", "2/5 • Using cached universe"),
+        "TRADING_DATE" => Loc.T("2/5 • Menentukan closing acuan", "2/5 • Resolving reference close"),
+        "BATCH_PLAN" => Loc.T("3/5 • Membentuk batch", "3/5 • Creating batches"),
+        "REQUEST_START" => Loc.T("3/5 • Mengirim request harga", "3/5 • Requesting prices"),
+        "REQUEST_OK" => Loc.T("3/5 • Data harga diterima", "3/5 • Price data received"),
+        "REQUEST_ERROR" => Loc.T("3/5 • Request gagal, lanjut", "3/5 • Request failed, continuing"),
+        "RETRY" => Loc.T("3/5 • Mencoba ulang request", "3/5 • Retrying request"),
+        "CLOSING_FALLBACK" => Loc.T("3/5 • Melanjutkan dengan data tersedia", "3/5 • Continuing with available data"),
+        "WAITING_CLOSE" => Loc.T("3/5 • Memastikan data closing tersedia", "3/5 • Verifying closing data"),
+        "RATE_LIMIT" => Loc.T("3/5 • Menunggu batas request", "3/5 • Waiting for rate limit"),
+        "FORBIDDEN_RETRY" => Loc.T("3/5 • Akses 403, mengganti endpoint", "3/5 • Access denied, switching endpoint"),
+        "DOWNLOAD" => Loc.T("3/5 • Mengambil data harga", "3/5 • Fetching price data"),
+        "BATCH_START" => Loc.T("3/5 • Memulai batch pengambilan", "3/5 • Starting download batch"),
+        "BATCH_COMPLETE" => Loc.T("3/5 • Batch selesai, lanjut berikutnya", "3/5 • Batch complete, continuing"),
+        "EVENTS" => Loc.T("4/5 • Memperbarui isu pasar", "4/5 • Updating market events"),
+        "ANALYZE" => Loc.T("4/5 • Menganalisis seluruh saham", "4/5 • Analyzing all stocks"),
+        "SAVING" => Loc.T("5/5 • Menyimpan hasil", "5/5 • Saving results"),
+        "COMPLETE" => Loc.T("Selesai", "Complete"),
+        "ERROR" => Loc.T("Proses gagal", "Process failed"),
         _ => stage
     };
 
@@ -399,28 +477,35 @@ public sealed class ScannerPage : ContentPage
         IEnumerable<ScanResult> query = results;
         if (!string.IsNullOrWhiteSpace(_search.Text))
             query = query.Where(x => x.Symbol.Contains(_search.Text.Trim(), StringComparison.OrdinalIgnoreCase));
-        var filter = _verdictFilter.SelectedItem?.ToString() ?? "Shortlist rekomendasi";
-        if (filter != "Semua hasil analisis")
-            query = filter switch
+        if (_verdictFilter.SelectedIndex != 1)
+            query = _verdictFilter.SelectedIndex switch
             {
-            "Shortlist rekomendasi" => query.Where(x =>
+                0 => query.Where(x =>
                 x.AllocationRank > 0 && x.SuggestedLots > 0 && x.Verdict == "BUY AREA"),
-                "LOT 0" => query.Where(x => x.SuggestedLots <= 0),
-                "Bisa dieksekusi" => query.Where(x => x.SuggestedLots > 0),
-                "Spekulatif" => query.Where(x => x.IsSpeculative),
-                "Non-spekulatif" => query.Where(x => !x.IsSpeculative),
-                _ => query.Where(x => x.Verdict.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                2 => query.Where(x => x.Verdict == "BUY AREA"),
+                3 => query.Where(x =>
+                    x.Verdict.Contains("WATCH", StringComparison.OrdinalIgnoreCase) ||
+                    x.Verdict.Contains("PANTAU", StringComparison.OrdinalIgnoreCase)),
+                4 => query.Where(x => x.Verdict.Contains("WAIT", StringComparison.OrdinalIgnoreCase)),
+                5 => query.Where(x => x.SuggestedLots <= 0),
+                6 => query.Where(x => x.SuggestedLots > 0),
+                7 => query.Where(x => x.IsSpeculative),
+                8 => query.Where(x => !x.IsSpeculative),
+                _ => query
             };
         query = _sort.SelectedIndex switch
         {
-            1 => query.OrderByDescending(x => x.RiskReward).ThenByDescending(x => x.Score),
+            1 => query.OrderByDescending(x => x.RiskReward)
+                      .ThenByDescending(x => x.CombinedScore),
             2 => query.OrderByDescending(x => x.LastPrice <= 0 ? 0 : (x.Target1 - x.LastPrice) / x.LastPrice),
             3 => query.OrderBy(x => x.LastPrice <= 0 ? decimal.MaxValue : (x.LastPrice - x.StopLoss) / x.LastPrice),
-            4 => query.OrderByDescending(x => x.SuggestedLots).ThenByDescending(x => x.Score),
-            5 => query.OrderBy(x => x.LastPrice).ThenByDescending(x => x.Score),
+            4 => query.OrderByDescending(x => x.SuggestedLots)
+                      .ThenByDescending(x => x.CombinedScore),
+            5 => query.OrderBy(x => x.LastPrice)
+                      .ThenByDescending(x => x.CombinedScore),
             6 => query.OrderBy(x => x.Symbol),
             _ => query.OrderByDescending(x => VerdictPriority(x.Verdict))
-                      .ThenByDescending(x => x.Score)
+                      .ThenByDescending(x => x.CombinedScore)
         };
         var filtered = query.ToList();
         var all = results.ToList();
@@ -429,11 +514,15 @@ public sealed class ScannerPage : ContentPage
         var shortlist = all.Count(x => x.AllocationRank > 0);
         var buySignals = all.Count(x => x.Verdict == "BUY AREA");
         _resultSummary.Text =
-            $"{universe:N0} universe • {all.Count:N0} berhasil dianalisis • {buySignals:N0} sinyal BUY • {shortlist:N0} masuk alokasi kas Rp{_data.State.Cash:N0}.";
+            Loc.T(
+                $"{universe:N0} universe • {all.Count:N0} berhasil dianalisis • {buySignals:N0} sinyal BUY • {shortlist:N0} masuk alokasi kas Rp{_data.State.Cash:N0}.",
+                $"{universe:N0} universe • {all.Count:N0} analyzed • {buySignals:N0} BUY signals • {shortlist:N0} allocated from Rp{_data.State.Cash:N0} cash.");
         var totalPages = Math.Max(1, (int)Math.Ceiling(filtered.Count / (double)PageSize));
         _page = Math.Clamp(_page, 1, totalPages);
         var items = filtered.Skip((_page - 1) * PageSize).Take(PageSize).ToList();
-        _pageInfo.Text = $"Halaman {_page}/{totalPages} • {filtered.Count} hasil";
+        _pageInfo.Text = Loc.T(
+            $"Halaman {_page}/{totalPages} • {filtered.Count} hasil",
+            $"Page {_page}/{totalPages} • {filtered.Count} results");
         _previous.IsEnabled = _page > 1;
         _next.IsEnabled = _page < totalPages;
         if (items.Count == 0)
@@ -454,17 +543,29 @@ public sealed class ScannerPage : ContentPage
             var isOwned = position is not null;
             var stack=new VerticalStackLayout { Spacing=8, Children=
             {
-                new Label { Text=$"Limit {r.EntryHigh:N0}  •  batal jika opening > {r.MaxBuyPrice:N0}", TextColor=Colors.White },
+                new Label
+                {
+                    Text = Loc.T(
+                        $"Limit {r.EntryHigh:N0} • batal jika opening > {r.EntryHigh:N0}",
+                        $"Limit {r.EntryHigh:N0} • cancel if opening > {r.EntryHigh:N0}"),
+                    TextColor=Colors.White
+                },
                 new Label { Text=$"Target {r.Target1:N0} / {r.Target2:N0}  •  Stop {r.StopLoss:N0}", TextColor=UiKit.Muted },
                 new Label
                 {
                     Text = isOwned && portfolioDecision is not null
-                        ? $"Tindakan posisi: {portfolioDecision.Action} • keyakinan {portfolioDecision.Confidence}"
+                        ? Loc.T(
+                            $"Tindakan posisi: {Loc.Action(portfolioDecision)} • keyakinan {portfolioDecision.ConfidenceScore}/100",
+                            $"Position action: {Loc.Action(portfolioDecision)} • confidence {portfolioDecision.ConfidenceScore}/100")
                         : r.SuggestedLots > 0
-                        ? $"Rencana: {r.SuggestedLots} lot @ limit {r.EntryHigh:N0}"
-                        : "Tidak dapat dieksekusi: ukuran aman 0 lot",
+                        ? Loc.T(
+                            $"Rencana: {r.SuggestedLots} lot @ limit {r.EntryHigh:N0}",
+                            $"Plan: {r.SuggestedLots} lots @ {r.EntryHigh:N0} limit")
+                        : Loc.T(
+                            "Tidak dapat dieksekusi: ukuran aman 0 lot",
+                            "Not executable: safe size is 0 lots"),
                     TextColor = isOwned
-                        ? ActionColor(portfolioDecision?.Action)
+                        ? ActionColor(portfolioDecision?.ActionCode)
                         : r.SuggestedLots > 0 ? UiKit.Green : UiKit.Red,
                     FontAttributes = FontAttributes.Bold
                 },
@@ -477,13 +578,17 @@ public sealed class ScannerPage : ContentPage
                 },
                 new Label
                 {
-                    Text = r.ExecutionNote,
+                    Text = Loc.English &&
+                           !string.IsNullOrWhiteSpace(r.ExecutionNoteEn)
+                        ? r.ExecutionNoteEn : r.ExecutionNote,
                     IsVisible = !string.IsNullOrWhiteSpace(r.ExecutionNote),
                     TextColor = r.AllocationRank > 0 ? UiKit.Blue : UiKit.Muted,
                 },
                 new Label
                 {
-                    Text=$"{r.DataSession} • tanggal data {r.DataTime:dd MMM yyyy} • bukan jam transaksi real-time",
+                    Text = Loc.T(
+                        $"{r.DataSession} • tanggal data {r.DataTime:dd MMM yyyy} • bukan jam transaksi real-time",
+                        $"{Loc.Session(r.DataSession)} • data date {r.DataTime:dd MMM yyyy} • not a real-time transaction timestamp"),
                     TextColor=UiKit.Muted
                 }
             }};
@@ -493,12 +598,12 @@ public sealed class ScannerPage : ContentPage
             stack.Children.Add(detail);
             _results.Children.Add(UiKit.ExpandableCard(
                 isOwned && portfolioDecision is not null
-                    ? $"{r.Symbol} · {portfolioDecision.Action}"
-                    : $"{r.Symbol} · {r.Verdict}",
+                    ? $"{r.Symbol} · {Loc.Action(portfolioDecision)}"
+                    : $"{r.Symbol} · {Loc.Verdict(r.Verdict)}",
                 isOwned && portfolioDecision is not null
                     ? Loc.T(
-                        $"Posisi {position!.Lots} lot · keyakinan {portfolioDecision.Confidence}",
-                        $"Position {position!.Lots} lots · {portfolioDecision.Confidence} confidence")
+                        $"Posisi {position!.Lots} lot · keyakinan {portfolioDecision.ConfidenceScore}/100",
+                        $"Position {position!.Lots} lots · confidence {portfolioDecision.ConfidenceScore}/100")
                     : r.SuggestedLots > 0
                     ? Loc.T(
                         $"Limit Rp {r.EntryHigh:N0} · {r.SuggestedLots} lot",
@@ -508,40 +613,50 @@ public sealed class ScannerPage : ContentPage
                         $"Watch Rp {r.EntryHigh:N0}"),
                 stack,
                 isOwned && portfolioDecision is not null
-                    ? portfolioDecision.Confidence
+                    ? $"{portfolioDecision.ConfidenceScore}/100"
                     : r.AllocationRank > 0 ? $"#{r.AllocationRank}" : Loc.T("PANTAU", "WATCH"),
                 isOwned && portfolioDecision is not null
-                    ? ActionColor(portfolioDecision.Action)
+                    ? ActionColor(portfolioDecision.ActionCode)
                     : r.AllocationRank > 0 ? UiKit.Green : UiKit.Blue));
         }
     }
 
-    static Color ActionColor(string? action) =>
-        action?.Contains("SELL", StringComparison.OrdinalIgnoreCase) == true ||
-        action?.Contains("REDUCE", StringComparison.OrdinalIgnoreCase) == true
+    static Color ActionColor(string? actionCode) =>
+        Loc.IsSellAction(actionCode)
             ? UiKit.Red
-            : action?.Contains("ADD", StringComparison.OrdinalIgnoreCase) == true ||
-              action?.Contains("AVERAGE", StringComparison.OrdinalIgnoreCase) == true
+            : Loc.IsBuyAction(actionCode)
                 ? UiKit.Green
                 : UiKit.Blue;
 
     static int VerdictPriority(string verdict) => verdict.Contains("BUY") ? 3 :
-        verdict.Contains("WATCH") ? 2 : verdict.Contains("WAIT") ? 1 : 0;
+        verdict.Contains("WATCH") || verdict.Contains("PANTAU") ? 2 :
+        verdict.Contains("WAIT") ? 1 : 0;
 
     void ShowPerformance()
     {
         var evaluated = _data.State.ScanHistory.SelectMany(x => x.Predictions)
-            .Where(x => x.ReturnPercent.HasValue).ToList();
+            .Where(x => x.ReturnPercent.HasValue &&
+                        x.Outcome is not ("NOT_FILLED" or "CANCELLED")).ToList();
+        var notFilled = _data.State.ScanHistory.SelectMany(x => x.Predictions)
+            .Count(x => x.Outcome == "NOT_FILLED");
+        var cancelled = _data.State.ScanHistory.SelectMany(x => x.Predictions)
+            .Count(x => x.Outcome == "CANCELLED");
         if (evaluated.Count == 0)
         {
             _status.Text = _data.State.ScanHistory.Count == 0
-                ? "Belum ada histori. Scan pertama akan disimpan sebagai baseline evaluasi."
-                : "Prediksi tersimpan dan menunggu scan berikutnya untuk dievaluasi.";
+                ? Loc.T("Belum ada histori. Scan pertama akan disimpan sebagai baseline evaluasi.")
+                : notFilled + cancelled > 0
+                    ? Loc.T(
+                        $"Belum ada transaksi terisi yang selesai dievaluasi • tidak terisi {notFilled} • dibatalkan {cancelled}.",
+                        $"No filled trade has completed evaluation yet • not filled {notFilled} • cancelled {cancelled}.")
+                    : Loc.T("Prediksi tersimpan dan menunggu scan berikutnya untuk dievaluasi.");
             return;
         }
         var positive = evaluated.Count(x => x.ReturnPercent > 0);
         var avg = evaluated.Average(x => x.ReturnPercent!.Value);
-        _status.Text = $"Evaluasi {evaluated.Count} prediksi • positif {(decimal)positive / evaluated.Count:P0} • rata-rata {avg:+0.00;-0.00;0.00}%";
+        _status.Text = Loc.T(
+            $"Evaluasi {evaluated.Count} transaksi terisi • positif {(decimal)positive / evaluated.Count:P0} • rata-rata {avg:+0.00;-0.00;0.00}% • tidak terisi {notFilled} • dibatalkan {cancelled}",
+            $"Evaluation of {evaluated.Count} filled trades • positive {(decimal)positive / evaluated.Count:P0} • average {avg:+0.00;-0.00;0.00}% • not filled {notFilled} • cancelled {cancelled}");
     }
 
     async Task ShowEvaluationAsync()
@@ -556,7 +671,11 @@ public sealed class ScannerPage : ContentPage
                 "Hanya shortlist rekomendasi nyata yang dicatat. Jalankan analisis untuk membuat baseline.");
             return;
         }
-        var evaluated = rows.Where(x => x.Prediction.ReturnPercent.HasValue).ToList();
+        var evaluated = rows.Where(x =>
+            x.Prediction.ReturnPercent.HasValue &&
+            x.Prediction.Outcome is not ("NOT_FILLED" or "CANCELLED")).ToList();
+        var notFilled = rows.Count(x => x.Prediction.Outcome == "NOT_FILLED");
+        var cancelled = rows.Count(x => x.Prediction.Outcome == "CANCELLED");
         var hitRate = evaluated.Count == 0 ? 0m :
             evaluated.Count(x => x.Prediction.ReturnPercent > 0) * 100m / evaluated.Count;
         var average = evaluated.Count == 0 ? 0m :
@@ -564,18 +683,37 @@ public sealed class ScannerPage : ContentPage
         var details = string.Join("\n\n", rows.Take(15).Select(x =>
         {
             var p = x.Prediction;
-            var actual = p.EvaluationPrice.HasValue
-                ? $"aktual Rp{p.EvaluationPrice:N0} • {p.ReturnPercent:+0.00;-0.00;0.00}% • {p.Outcome}"
-                : "aktual: menunggu snapshot berikutnya";
-            return $"{p.Symbol} • {p.DataSession} • {p.PredictedAt:dd MMM HH:mm}\n" +
-                   $"prediksi Rp{p.StartPrice:N0} → target Rp{p.Target1:N0} • stop Rp{p.StopLoss:N0}\n{actual}";
+            var actual = p.Outcome == "CANCELLED"
+                ? Loc.T(
+                    "rekomendasi dibatalkan sebelum eksekusi",
+                    "recommendation was cancelled before execution")
+                : p.Outcome == "NOT_FILLED"
+                ? Loc.T(
+                    "order GFD tidak terisi",
+                    "GFD order was not filled")
+                : p.EvaluationPrice.HasValue
+                    ? Loc.T(
+                        $"aktual Rp{p.EvaluationPrice:N0} • {p.ReturnPercent:+0.00;-0.00;0.00}% • {Loc.Outcome(p.Outcome)}",
+                        $"actual Rp{p.EvaluationPrice:N0} • {p.ReturnPercent:+0.00;-0.00;0.00}% • {Loc.Outcome(p.Outcome)}")
+                    : Loc.T(
+                        "aktual: menunggu snapshot berikutnya",
+                        "actual: waiting for the next snapshot");
+            return Loc.T(
+                $"{p.Symbol} • {Loc.Session(p.DataSession)} • {p.PredictedAt:dd MMM HH:mm}\n" +
+                $"limit Rp{p.StartPrice:N0} → target Rp{p.Target1:N0} • stop Rp{p.StopLoss:N0}\n{actual}",
+                $"{p.Symbol} • {Loc.Session(p.DataSession)} • {p.PredictedAt:dd MMM HH:mm}\n" +
+                $"limit Rp{p.StartPrice:N0} → target Rp{p.Target1:N0} • stop Rp{p.StopLoss:N0}\n{actual}");
         }));
         var training = _data.State.Strategy.Training;
         var strategyText = training is null
-            ? "Strategi aktif belum berasal dari trainer tervalidasi. Aplikasi mengevaluasi hasil, tetapi tidak mengubah bobot sendiri."
-            : $"Strategi v{_data.State.Strategy.Version} • walk-forward {training.OutOfSampleFolds} fold / {training.OutOfSampleTrades} trade OOS.";
+            ? Loc.T("Strategi aktif belum berasal dari trainer tervalidasi. Aplikasi mengevaluasi hasil, tetapi tidak mengubah bobot sendiri.")
+            : Loc.T(
+                $"Strategi v{_data.State.Strategy.Version} • walk-forward {training.OutOfSampleFolds} fold / {training.OutOfSampleTrades} trade OOS.",
+                $"Strategy v{_data.State.Strategy.Version} • {training.OutOfSampleFolds} walk-forward folds / {training.OutOfSampleTrades} OOS trades.");
         await AppDialog.ShowAsync(this, "Evaluasi prediksi",
-            $"{strategyText}\n\nDievaluasi {evaluated.Count}/{rows.Count} • positif {hitRate:0.0}% • return rata-rata {average:+0.00;-0.00;0.00}%\n\n15 prediksi terakhir:\n\n{details}");
+            Loc.T(
+                $"{strategyText}\n\nTransaksi terisi dievaluasi {evaluated.Count} • order tidak terisi {notFilled} • dibatalkan {cancelled} • positif {hitRate:0.0}% • return rata-rata {average:+0.00;-0.00;0.00}%\n\n15 prediksi terakhir:\n\n{details}",
+                $"{strategyText}\n\nEvaluated filled trades {evaluated.Count} • unfilled orders {notFilled} • cancelled {cancelled} • positive {hitRate:0.0}% • average return {average:+0.00;-0.00;0.00}%\n\nLatest 15 predictions:\n\n{details}"));
     }
 
     void UpdateClosingInfo()
@@ -584,9 +722,67 @@ public sealed class ScannerPage : ContentPage
         var snapshot = _engine.GetSnapshot(intraday);
         var label = intraday ? "Closing Sesi 1" : "Closing Sesi 2 / hari bursa terakhir";
         _closingInfo.Text = snapshot is null
-            ? $"Otomatis memakai {label} yang terakhir tersedia."
-            : $"Closing otomatis: {(snapshot.Session == "LUNCH" ? "Sesi 1" : "Sesi 2")} • {snapshot.TradingDate:dd MMM yyyy} • data dipilih berdasarkan waktu scan.";
+            ? Loc.T(
+                $"Otomatis memakai {label} yang terakhir tersedia.",
+                $"Automatically uses the latest available {(intraday ? "Session 1 close" : "Session 2 / last trading day close")}.")
+            : Loc.T(
+                $"Closing otomatis: {(snapshot.Session == "LUNCH" ? "Sesi 1" : "Sesi 2")} • {snapshot.TradingDate:dd MMM yyyy} • data dipilih berdasarkan waktu scan.",
+                $"Automatic close: {(snapshot.Session == "LUNCH" ? "Session 1" : "Session 2")} • {snapshot.TradingDate:dd MMM yyyy} • data selected according to scan time.");
     }
+
+    static string LocalizeProgress(ScanProgress progress)
+    {
+        if (!Loc.English) return progress.Message;
+        return progress.Stage switch
+        {
+            "PREPARING" => "Preparing the scanner",
+            "UNIVERSE" => "Updating the IDX universe",
+            "UNIVERSE_REQUEST" => "Requesting the IDX issuer master",
+            "UNIVERSE_PARSE" => "Reading the IDX response",
+            "UNIVERSE_READY" => "IDX universe is ready",
+            "UNIVERSE_FALLBACK" => "Using the cached IDX universe",
+            "TRADING_DATE" => "Resolving the reference trading date",
+            "BATCH_PLAN" => "Preparing download batches",
+            "REQUEST_START" => string.IsNullOrWhiteSpace(progress.CurrentSymbol)
+                ? "Requesting price data"
+                : $"Requesting {progress.CurrentSymbol}",
+            "REQUEST_OK" => string.IsNullOrWhiteSpace(progress.CurrentSymbol)
+                ? "Price data received"
+                : $"{progress.CurrentSymbol} received",
+            "REQUEST_ERROR" => string.IsNullOrWhiteSpace(progress.CurrentSymbol)
+                ? "A request failed; continuing"
+                : $"{progress.CurrentSymbol} failed; continuing",
+            "RETRY" => string.IsNullOrWhiteSpace(progress.CurrentSymbol)
+                ? "Retrying a request"
+                : $"Retrying {progress.CurrentSymbol}",
+            "WAITING_CLOSE" => "Verifying closing data",
+            "CLOSING_FALLBACK" => "Continuing with available closing data",
+            "RATE_LIMIT" => "Waiting for the data-source rate limit",
+            "FORBIDDEN_RETRY" => "Access denied; switching endpoint",
+            "DOWNLOAD" => "Downloading market data",
+            "BATCH_START" => "Starting a download batch",
+            "BATCH_COMPLETE" => "Download batch completed",
+            "EVENTS" => "Updating market events",
+            "ANALYZE" => "Analyzing candidates",
+            "SAVING" => "Saving scan results and portfolio decisions",
+            "COMPLETE" => "Process completed",
+            "ERROR" => progress.Message.StartsWith("Scan gagal:",
+                StringComparison.OrdinalIgnoreCase)
+                ? "Scan failed: " + progress.Message["Scan gagal:".Length..].Trim()
+                : "The process failed",
+            _ => Loc.T(progress.Message)
+        };
+    }
+
+    static string LocalizeSource(string source) =>
+        source.ToLowerInvariant() switch
+        {
+            "cache lokal" => "local cache",
+            "kalender sesi" => "session calendar",
+            "scheduler lokal" => "local scheduler",
+            "fallback waktu sesi" => "session-time fallback",
+            _ => source
+        };
 
     sealed record TechnicalEntry(string Stage, string Text);
 }

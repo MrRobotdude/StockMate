@@ -12,10 +12,23 @@ namespace StockMate
         protected override void OnCreate(Bundle? savedInstanceState)
         {
             base.OnCreate(savedInstanceState);
-            if (Build.VERSION.SdkInt >= BuildVersionCodes.Tiramisu &&
-                CheckSelfPermission(Manifest.Permission.PostNotifications) != Permission.Granted)
-                RequestPermissions([Manifest.Permission.PostNotifications], 1401);
-            BackgroundScanScheduler.ScheduleDaily(this);
+            try
+            {
+                if (Build.VERSION.SdkInt >= BuildVersionCodes.Tiramisu &&
+                    CheckSelfPermission(
+                        Manifest.Permission.PostNotifications) !=
+                    Permission.Granted)
+                    RequestPermissions(
+                        [Manifest.Permission.PostNotifications], 1401);
+                BackgroundScanScheduler.ScheduleDaily(this);
+            }
+            catch (Exception ex)
+            {
+                // Activity callbacks must never leak a managed exception into
+                // Android's Java callback boundary.
+                global::Android.Util.Log.Error(
+                    "StockMateMainActivity", ex.ToString());
+            }
         }
     }
 }

@@ -1,4 +1,4 @@
-# StockMate 0.7.1
+# StockMate 0.7.2
 
 StockMate masih berada pada tahap pengembangan awal. Nomor versi publik memakai
 format `0.MINOR.PATCH`: fitur yang sudah stabil untuk satu milestone digabung
@@ -7,7 +7,8 @@ APK tanpa membuat versi publik baru.
 
 ## Yang tersedia di milestone 0.7
 
-- Sekitar 08.45 WIB memperbarui konteks sebelum pembukaan.
+- Sekitar 08.45 WIB memperbarui konteks sebelum pembukaan, memeriksa ulang
+  rekomendasi pukul 07.00, dan menandai order yang gugur sebagai `DIBATALKAN`.
 - Setelah scan closing 16.30 WIB memperbarui isu dan keputusan gabungan.
 - Cakupan dibatasi ke portofolio, 20 kandidat teratas, dan konteks pasar.
 - Detail memisahkan skor teknikal, penyesuaian isu, skor gabungan, sumber, dan waktu.
@@ -16,10 +17,29 @@ APK tanpa membuat versi publik baru.
 Feed gratis dapat terlambat atau tidak lengkap. Jika data tidak cukup, aplikasi
 menyatakan keputusan tetap berbasis teknikal dan tidak mengarang sentimen.
 
+### Koreksi prediksi dan instruksi lot 0.7.2
+
+- RSI yang sebelumnya terbalik sudah dikoreksi.
+- ATR memakai true range, filter likuiditas memakai median nilai transaksi,
+  dan ukuran lot menghitung risiko bersih termasuk fee beli/jual.
+- Target dibulatkan secara konservatif agar risk/reward minimum tetap terpenuhi.
+- Entry hanya berupa satu harga limit GFD; evaluasi membedakan order terisi dan
+  tidak terisi serta memakai stop terlebih dahulu bila urutan intraday tidak diketahui.
+- `REDUCE 50%` tidak lagi ditampilkan. Aplikasi menghasilkan jumlah lot pasti;
+  untuk 3 lot, pengurangan separuh dibulatkan menjadi jual 2 lot dan sisa 1 lot.
+- Model v2 yang berstatus `REJECTED_RESEARCH` tidak dimasukkan ke aplikasi karena
+  bundle itu tidak memiliki bobot runtime yang layak. Fallback rule-based tetap
+  diberi label jujur sampai ada bundle `READY_FOR_FORWARD_TEST`.
+- Penyimpanan pengaturan dan pergantian bahasa tidak lagi mengganti root halaman
+  ketika loading modal masih aktif. Callback progress selalu kembali ke UI thread.
+- Teks dinamis, dialog, hasil impor, keputusan, prediksi, dan notifikasi mengikuti
+  Bahasa Indonesia/English yang dipilih.
+
 ### Background scanner yang lebih tahan
 
-- Penarikan data pagi dijadwalkan sekitar 07.00 WIB pada hari bursa agar
-  snapshot sudah siap sebelum sesi pra-pembukaan.
+- Penarikan data pagi dijadwalkan sekitar 07.00 WIB pada hari bursa dan
+  langsung dilanjutkan dengan analisis serta keputusan portofolio agar
+  rekomendasi sudah siap sebelum sesi pra-pembukaan.
 - Ambil/perbarui data manual memakai foreground service yang sama dengan scan
   terjadwal, sehingga proses tidak bergantung pada halaman Scanner tetap buka.
 - Notifikasi progres tetap tersedia ketika UI ditutup dan meninggalkan status
@@ -215,8 +235,9 @@ menyatakan keputusan tetap berbasis teknikal dan tidak mengarang sentimen.
 - Impor e-Statement PDF Stockbit sesuai format `Transaction History` (Trans Date, Due Date, Stock, Buy/Sell, Lot, Price, Buy/Sell Value, Sales Tax).
 - Partial fill tetap disimpan sebagai transaksi berbeda; baris TOTAL, header, dan footer diabaikan.
 - PDF Stockbit hanya mencantumkan sales tax. StockMate tidak mengklaim realized P/L sudah net seluruh brokerage fee.
-- Portfolio Decision mengevaluasi posisi aktual dan history: HOLD, ADD, AVERAGE DOWN bertahap, TAKE PROFIT, REDUCE, atau SELL ALL/CUT LOSS.
-- Setiap keputusan memuat ukuran tambah maksimum, stop, target, alasan, kondisi pembatalan, dan tingkat keyakinan.
+- Portfolio Decision mengevaluasi posisi aktual dan history: HOLD, ADD, AVERAGE DOWN, TAKE PROFIT, REDUCE, atau SELL ALL/CUT LOSS.
+- Setiap keputusan memuat jumlah lot pasti, satu harga eksekusi, stop, target,
+  alasan, kondisi pembatalan, dan skor keyakinan.
 - Portfolio Decision tetap berbasis data harga-volume terbaru dan manajemen risiko; belum menggantikan analisis fundamental, berita, makro, atau verifikasi order di Stockbit.
 
 StockMate adalah aplikasi .NET MAUI khusus Android untuk mencatat portofolio
@@ -256,7 +277,7 @@ powershell -ExecutionPolicy Bypass -File .\Build-Release.ps1
 Pada build pertama script membuat `stockmate-release.keystore`, meminta
 password, melakukan publish `Release`, lalu menghasilkan:
 
-`artifacts\release\StockMate-v0.7.0-release.apk`
+`artifacts\release\StockMate-v0.7.2-release.apk`
 
 Jangan kehilangan keystore atau password. Android hanya menerima update dengan
 application ID dan signing key yang sama. Keystore sudah dikecualikan dari Git.

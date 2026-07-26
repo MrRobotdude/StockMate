@@ -13,11 +13,11 @@ public static class UiKit
     public static readonly Color Surface = Color.FromArgb("#101A2B");
     public static readonly Color CardStroke = Color.FromArgb("#24314A");
 
-    public static Label Title(string text) => new() { Text = text, FontSize = 24, FontAttributes = FontAttributes.Bold, TextColor = Colors.White };
-    public static Label SectionTitle(string text) => new() { Text = text, FontSize = 18, FontAttributes = FontAttributes.Bold, TextColor = Colors.White };
-    public static Label Body(string text) => new() { Text = text, FontSize = 14, TextColor = Colors.White, LineHeight = 1.18 };
-    public static Label Sub(string text) => new() { Text = text, FontSize = 14, TextColor = Muted, LineHeight = 1.18 };
-    public static Label Caption(string text) => new() { Text = text, FontSize = 12, TextColor = Muted };
+    public static Label Title(string text) => new() { Text = Loc.T(text), FontSize = 24, FontAttributes = FontAttributes.Bold, TextColor = Colors.White };
+    public static Label SectionTitle(string text) => new() { Text = Loc.T(text), FontSize = 18, FontAttributes = FontAttributes.Bold, TextColor = Colors.White };
+    public static Label Body(string text) => new() { Text = Loc.T(text), FontSize = 14, TextColor = Colors.White, LineHeight = 1.18 };
+    public static Label Sub(string text) => new() { Text = Loc.T(text), FontSize = 14, TextColor = Muted, LineHeight = 1.18 };
+    public static Label Caption(string text) => new() { Text = Loc.T(text), FontSize = 12, TextColor = Muted };
     public static Border Box(View content) => new()
     {
         Content = content, BackgroundColor = Card, Stroke = CardStroke,
@@ -26,19 +26,19 @@ public static class UiKit
     };
     public static Button Primary(string text) => new()
     {
-        Text = text, BackgroundColor = Blue, TextColor = Colors.White, FontAttributes = FontAttributes.Bold,
+        Text = Loc.T(text), BackgroundColor = Blue, TextColor = Colors.White, FontAttributes = FontAttributes.Bold,
         CornerRadius = 14, HeightRequest = 52, MinimumHeightRequest = 52,
         FontSize = 14, Padding = new Thickness(14, 0)
     };
     public static Button Secondary(string text) => new()
     {
-        Text = text, BackgroundColor = Surface, TextColor = Colors.White,
+        Text = Loc.T(text), BackgroundColor = Surface, TextColor = Colors.White,
         FontAttributes = FontAttributes.Bold, CornerRadius = 14, HeightRequest = 52,
         MinimumHeightRequest = 52, FontSize = 14, Padding = new Thickness(14, 0)
     };
     public static Button Tertiary(string text) => new()
     {
-        Text = text, BackgroundColor = Colors.Transparent, TextColor = Blue,
+        Text = Loc.T(text), BackgroundColor = Colors.Transparent, TextColor = Blue,
         FontAttributes = FontAttributes.Bold, CornerRadius = 12,
         HeightRequest = 48, MinimumHeightRequest = 48, FontSize = 14
     };
@@ -85,7 +85,7 @@ public static class UiKit
             Spacing = 5,
             Children =
             {
-                Caption(label.ToUpperInvariant()),
+                Caption(Loc.T(label).ToUpperInvariant()),
                 new Label
                 {
                     Text = value, TextColor = color ?? Colors.White,
@@ -110,9 +110,9 @@ public static class UiKit
             Spacing = 3,
             Children =
             {
-                new Label { Text = title, TextColor = Colors.White,
+                new Label { Text = Loc.T(title), TextColor = Colors.White,
                     FontAttributes = FontAttributes.Bold, FontSize = 16 },
-                Sub(summary)
+                Sub(Loc.T(summary))
             }
         };
         var header = new Grid
@@ -132,7 +132,7 @@ public static class UiKit
             {
                 Content = new Label
                 {
-                    Text = badge, TextColor = badgeColor ?? Blue,
+                    Text = Loc.T(badge), TextColor = badgeColor ?? Blue,
                     FontSize = 11, FontAttributes = FontAttributes.Bold
                 },
                 BackgroundColor = Surface, StrokeThickness = 0,
@@ -179,7 +179,17 @@ public static class UiKit
     {
         // Start the work first. Fast local work must not flash a modal or interfere
         // with Shell tab navigation.
-        var work = action();
+        Task work;
+        try
+        {
+            work = action();
+        }
+        catch
+        {
+            // A synchronous callback failure must reach the caller instead of
+            // escaping through an Android Java proxy callback.
+            throw;
+        }
         var first = await Task.WhenAny(work, Task.Delay(250));
         if (first == work)
         {
@@ -189,6 +199,7 @@ public static class UiKit
 
         await BusyOverlayGate.WaitAsync();
         BlockingBusyPage? overlay = null;
+        var navigation = page.Navigation;
         try
         {
             // The operation may have completed while another global overlay owned
@@ -200,13 +211,28 @@ public static class UiKit
             }
 
             overlay = new BlockingBusyPage(message);
-            await page.Navigation.PushModalAsync(overlay, false);
+            await MainThread.InvokeOnMainThreadAsync(
+                () => navigation.PushModalAsync(overlay, false));
             await work;
         }
         finally
         {
-            if (overlay is not null && overlay.Navigation.ModalStack.Contains(overlay))
-                await overlay.Navigation.PopModalAsync(false);
+            if (overlay is not null)
+            {
+                try
+                {
+                    await MainThread.InvokeOnMainThreadAsync(async () =>
+                    {
+                        if (navigation.ModalStack.Contains(overlay))
+                            await navigation.PopModalAsync(false);
+                    });
+                }
+                catch
+                {
+                    // The window may have been replaced after a completed
+                    // operation. Never leave the busy gate locked in that case.
+                }
+            }
             BusyOverlayGate.Release();
         }
     }
@@ -263,9 +289,9 @@ public static class UiKit
             {
                 new Label { Text = icon, FontSize = 30, TextColor = Purple,
                     HorizontalTextAlignment = TextAlignment.Center },
-                new Label { Text = title, FontSize = 17, FontAttributes = FontAttributes.Bold,
+                new Label { Text = Loc.T(title), FontSize = 17, FontAttributes = FontAttributes.Bold,
                     TextColor = Colors.White, HorizontalTextAlignment = TextAlignment.Center },
-                new Label { Text = message, FontSize = 13, TextColor = Muted,
+                new Label { Text = Loc.T(message), FontSize = 13, TextColor = Muted,
                     HorizontalTextAlignment = TextAlignment.Center }
             }
         });

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Net.Http.Headers;
 using StockMate.Models;
+using StockMate.Ui;
 
 namespace StockMate.Services;
 
@@ -35,7 +36,9 @@ public sealed class UniverseService(AppDataService data)
     {
         if (!force && data.State.MarketUniverse.Count > 500 &&
             data.State.UniverseUpdatedAt > DateTime.Now.AddDays(-7))
-            return (data.State.MarketUniverse.Count, false, "Master IDX masih baru.");
+            return (data.State.MarketUniverse.Count, false, Loc.T(
+                "Master IDX masih baru.",
+                "The IDX master list is still current."));
 
         try
         {
@@ -43,10 +46,14 @@ public sealed class UniverseService(AppDataService data)
             progress?.Report(new()
             {
                 Stage = "UNIVERSE_REQUEST",
-                Message = "Menghubungi master emiten IDX",
+                Message = Loc.T(
+                    "Menghubungi master emiten IDX",
+                    "Requesting the IDX issuer master"),
                 Source = "IDX Listed Company",
                 Total = Symbols.Count,
-                TechnicalDetail = "HTTP GET dimulai • timeout 15 detik • cache tetap tersedia"
+                TechnicalDetail = Loc.T(
+                    "HTTP GET dimulai • timeout 15 detik • cache tetap tersedia",
+                    "HTTP GET started • 15-second timeout • cache remains available")
             });
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
             http.DefaultRequestHeaders.UserAgent.ParseAdd(
@@ -58,11 +65,15 @@ public sealed class UniverseService(AppDataService data)
             progress?.Report(new()
             {
                 Stage = "UNIVERSE_PARSE",
-                Message = $"Respons IDX diterima: HTTP {(int)response.StatusCode}",
+                Message = Loc.T(
+                    $"Respons IDX diterima: HTTP {(int)response.StatusCode}",
+                    $"IDX response received: HTTP {(int)response.StatusCode}"),
                 Source = "IDX Listed Company",
                 Total = Symbols.Count,
                 ElapsedMilliseconds = (long)(DateTime.UtcNow - started).TotalMilliseconds,
-                TechnicalDetail = "Memvalidasi respons dan mengekstrak kode emiten"
+                TechnicalDetail = Loc.T(
+                    "Memvalidasi respons dan mengekstrak kode emiten",
+                    "Validating the response and extracting issuer symbols")
             });
             response.EnsureSuccessStatusCode();
             using var doc = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(ct));
@@ -70,7 +81,9 @@ public sealed class UniverseService(AppDataService data)
             CollectCodes(doc.RootElement, found);
             var symbols = found.Where(IsValidCode).OrderBy(x => x).ToArray();
             if (symbols.Length < 500)
-                throw new InvalidDataException($"Sumber hanya mengembalikan {symbols.Length} kode.");
+                throw new InvalidDataException(Loc.T(
+                    $"Sumber hanya mengembalikan {symbols.Length} kode.",
+                    $"The source returned only {symbols.Length} symbols."));
             await data.SetUniverseAsync(symbols);
             data.State.UniverseUpdatedAt = DateTime.Now;
             data.State.UniverseSource = "IDX Listed Company";
@@ -78,13 +91,19 @@ public sealed class UniverseService(AppDataService data)
             progress?.Report(new()
             {
                 Stage = "UNIVERSE_READY",
-                Message = $"Universe siap: {symbols.Length} saham",
+                Message = Loc.T(
+                    $"Universe siap: {symbols.Length} saham",
+                    $"Universe ready: {symbols.Length} stocks"),
                 Source = "IDX Listed Company",
                 Total = symbols.Length,
                 ElapsedMilliseconds = (long)(DateTime.UtcNow - started).TotalMilliseconds,
-                TechnicalDetail = "Universe disimpan; pembentukan batch dapat dimulai"
+                TechnicalDetail = Loc.T(
+                    "Universe disimpan; pembentukan batch dapat dimulai",
+                    "Universe saved; batch creation can begin")
             });
-            return (symbols.Length, true, "Master IDX berhasil diperbarui.");
+            return (symbols.Length, true, Loc.T(
+                "Master IDX berhasil diperbarui.",
+                "The IDX master list was updated."));
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
@@ -92,16 +111,22 @@ public sealed class UniverseService(AppDataService data)
             progress?.Report(new()
             {
                 Stage = "UNIVERSE_FALLBACK",
-                Message = $"Refresh IDX gagal; memakai cache {count} saham",
-                Source = "cache lokal",
+                Message = Loc.T(
+                    $"Refresh IDX gagal; memakai cache {count} saham",
+                    $"IDX refresh failed; using {count} cached stocks"),
+                Source = Loc.T("cache lokal", "local cache"),
                 Total = count,
                 Failed = 1,
                 TechnicalDetail = $"{ex.GetType().Name}: {ex.Message}"
             });
             return (count, false,
                 data.State.MarketUniverse.Count > 0
-                    ? $"Pembaruan gagal; memakai cache {count} saham. {ex.Message}"
-                    : $"Pembaruan gagal; sementara memakai fallback {count} saham. Impor universe bila perlu. {ex.Message}");
+                    ? Loc.T(
+                        $"Pembaruan gagal; memakai cache {count} saham. {ex.Message}",
+                        $"The update failed; using {count} cached stocks. {ex.Message}")
+                    : Loc.T(
+                        $"Pembaruan gagal; sementara memakai fallback {count} saham. Impor universe bila perlu. {ex.Message}",
+                        $"The update failed; temporarily using {count} fallback stocks. Import a universe if needed. {ex.Message}"));
         }
     }
 

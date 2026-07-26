@@ -1,6 +1,7 @@
 using System.Net;
 using System.Xml.Linq;
 using StockMate.Models;
+using StockMate.Ui;
 
 namespace StockMate.Services;
 
@@ -32,12 +33,46 @@ public sealed class EventIntelligenceService(AppDataService data)
         var tasks = jobs.Select(async job =>
         {
             await gate.WaitAsync(ct);
-            try { return await FetchAsync(job.Symbol, job.Query, ct); }
+            try
+            {
+                return (
+                    Symbol: job.Symbol,
+                    Success: true,
+                    Items: await FetchAsync(job.Symbol, job.Query, ct));
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    $"Event feed {job.Symbol} failed: {ex}");
+                return (
+                    Symbol: job.Symbol,
+                    Success: false,
+                    Items: new List<EventInsight>());
+            }
             finally { gate.Release(); }
         });
-        var fresh = (await Task.WhenAll(tasks)).SelectMany(x => x)
+        var batches = await Task.WhenAll(tasks);
+        if (!batches.Any(x => x.Success))
+            throw new HttpRequestException(Loc.T(
+                "Semua sumber berita gagal diperbarui; data isu lama dipertahankan.",
+                "All news feeds failed to refresh; existing event data was preserved."));
+        var successfulSymbols = batches
+            .Where(x => x.Success)
+            .Select(x => x.Symbol)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var retained = data.State.EventInsights
+            .Where(x => !successfulSymbols.Contains(x.Symbol) &&
+                        x.PublishedAt >= DateTime.Now.AddDays(-7));
+        var fresh = batches.SelectMany(x => x.Items)
+            .Concat(retained)
             .Where(x => x.PublishedAt >= DateTime.Now.AddDays(-7))
-            .GroupBy(x => x.Url)
+            .GroupBy(x => string.IsNullOrWhiteSpace(x.Url)
+                ? $"{x.Symbol}|{x.Title}"
+                : x.Url)
             .Select(x => x.First())
             .OrderByDescending(x => x.PublishedAt).ToList();
 
@@ -72,8 +107,12 @@ public sealed class EventIntelligenceService(AppDataService data)
                 Impact = impact,
                 Direction = impact > 0 ? "POSITIF" : impact < 0 ? "NEGATIF" : "NETRAL",
                 Reason = impact == 0
-                    ? "Judul tidak memberi sinyal dampak yang cukup jelas; tidak mengubah skor."
-                    : $"Penyesuaian terbatas {impact:+#;-#;0} poin berdasarkan kata kunci pada judul berita.",
+                    ? Loc.T(
+                        "Judul tidak memberi sinyal dampak yang cukup jelas; tidak mengubah skor.",
+                        "The headline does not provide a clear enough impact signal, so the score is unchanged.")
+                    : Loc.T(
+                        $"Penyesuaian terbatas {impact:+#;-#;0} poin berdasarkan kata kunci pada judul berita.",
+                        $"A limited adjustment of {impact:+#;-#;0} points was applied from headline keywords."),
                 RetrievedAt = DateTime.Now
             };
         }).ToList();
@@ -101,10 +140,13 @@ public sealed class EventIntelligenceService(AppDataService data)
             .Where(x => x.PublishedAt >= DateTime.Now.AddDays(-3))
             .OrderByDescending(x => x.PublishedAt).ToList();
         if (relevant.Count == 0)
-            return (0, "Data isu terbaru tidak cukup; keputusan tetap berbasis teknikal.");
+            return (0, Loc.T(
+                "Data isu terbaru tidak cukup; keputusan tetap berbasis teknikal.",
+                "There is not enough recent event data; the decision remains technical."));
         var adjustment = Math.Clamp(relevant.Sum(x => x.Impact), -8, 6);
         var strongest = relevant.OrderByDescending(x => Math.Abs(x.Impact)).First();
         return (adjustment,
-            $"{strongest.Direction}: {strongest.Title} ({strongest.Source}, {strongest.PublishedAt:dd MMM HH:mm}).");
+            $"{Loc.Direction(strongest.Direction)}: {strongest.Title} " +
+            $"({strongest.Source}, {strongest.PublishedAt:dd MMM HH:mm}).");
     }
 }

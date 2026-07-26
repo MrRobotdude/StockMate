@@ -11,6 +11,7 @@ public sealed class DashboardPage : ContentPage
     readonly EventIntelligenceService _events;
     readonly VerticalStackLayout _root = UiKit.PageStack();
     bool _isPreparing;
+    bool _subscribed;
 
     public DashboardPage(
         AppDataService data, PortfolioDecisionService decisions,
@@ -23,7 +24,7 @@ public sealed class DashboardPage : ContentPage
         BackgroundColor = UiKit.Navy;
         Content = new ScrollView { Content = _root };
         Appearing += OnAppearing;
-        _data.Changed += Render;
+        Disappearing += OnDisappearing;
     }
 
     async void OnAppearing(object? sender, EventArgs e)
@@ -31,6 +32,11 @@ public sealed class DashboardPage : ContentPage
         if (_isPreparing)
             return;
 
+        if (!_subscribed)
+        {
+            _data.Changed += Render;
+            _subscribed = true;
+        }
         _isPreparing = true;
         try
         {
@@ -40,10 +46,25 @@ public sealed class DashboardPage : ContentPage
             await _decisions.RebuildAsync();
             Render();
         }
+        catch (Exception ex)
+        {
+            await AppDialog.ShowAsync(this, Loc.T("Gagal", "Failed"),
+                Loc.T(
+                    $"Ringkasan tidak dapat diperbarui: {ex.Message}",
+                    $"The summary could not be refreshed: {ex.Message}"),
+                danger: true);
+        }
         finally
         {
             _isPreparing = false;
         }
+    }
+
+    void OnDisappearing(object? sender, EventArgs e)
+    {
+        if (!_subscribed) return;
+        _data.Changed -= Render;
+        _subscribed = false;
     }
 
     void Render()
@@ -137,7 +158,7 @@ public sealed class DashboardPage : ContentPage
 
         foreach (var item in items)
         {
-            var color = ActionColor(item.Action);
+            var color = ActionColor(item.ActionCode);
             var detail = new VerticalStackLayout
             {
                 Spacing = 8,
@@ -156,7 +177,9 @@ public sealed class DashboardPage : ContentPage
             _root.Children.Add(UiKit.ExpandableCard(
                 $"{item.Symbol} · {item.Action}",
                 RecommendationSummary(item),
-                detail, item.Confidence, color));
+                detail,
+                $"{item.Confidence} · {item.ConfidenceScore}/100",
+                color));
         }
     }
 
@@ -165,43 +188,66 @@ public sealed class DashboardPage : ContentPage
         foreach (var d in _data.State.PortfolioDecisions)
             yield return new RecommendationItem
             {
-                Symbol = d.Symbol, Action = d.Action, Confidence = d.Confidence,
+                Symbol = d.Symbol,
+                ActionCode = d.ActionCode,
+                Action = Loc.Action(d),
+                Confidence = Loc.Confidence(d.Confidence),
+                ConfidenceScore = d.ConfidenceScore,
                 SuggestedLots = d.SuggestedLots,
+                ActionLots = d.ActionLots,
+                ExecutionPrice = d.ExecutionPrice,
                 EntryLow = d.EntryLow,
                 EntryHigh = d.EntryHigh,
                 ReferencePrice = d.ReferencePrice,
-                Detail = d.SuggestedLots > 0
-                    ? $"{d.Reason} {d.SuggestedLots} lot dengan limit {d.EntryHigh:N0}."
-                    : d.Reason,
+                Detail = Loc.IsBuyAction(d.ActionCode)
+                    ? Loc.T(
+                        $"{d.Reason} Tambah {d.SuggestedLots} lot dengan limit Rp {d.EntryHigh:N0}.",
+                        $"{d.Reason} Add {d.SuggestedLots} lots with a Rp {d.EntryHigh:N0} limit.")
+                    : Loc.IsSellAction(d.ActionCode)
+                        ? Loc.T(
+                            $"{d.Reason} Jual {d.ActionLots} lot pada Rp {d.ExecutionPrice:N0}.",
+                            $"{d.Reason} Sell {d.ActionLots} lots at Rp {d.ExecutionPrice:N0}.")
+                        : d.Reason,
                 RiskDetail = $"{d.RiskAction} {d.TakeProfitAction}",
                 Stop = d.StopLoss, Target = d.Target,
-                Priority = ActionPriority(d.Action) + ConfidencePriority(d.Confidence)
+                Priority = ActionPriority(d.ActionCode) +
+                           ConfidencePriority(d.Confidence)
             };
 
         var held = _data.State.Positions.Select(x => x.Symbol)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var scan in _data.State.LastScan.Where(x =>
                      !held.Contains(x.Symbol) &&
-                     x.Score + _events.Summarize(x.Symbol).Adjustment >=
+                     x.Verdict == "BUY AREA" &&
+                     x.AllocationRank > 0 &&
+                     x.SuggestedLots > 0 &&
+                     x.Score + EventView(x.Symbol).Adjustment >=
                          _data.State.Strategy.BuyScore &&
                      x.LastPrice <= x.MaxBuyPrice).Take(5))
         {
-            var eventView = _events.Summarize(scan.Symbol);
+            var eventView = EventView(scan.Symbol);
             var combinedScore = Math.Clamp(scan.Score + eventView.Adjustment, 0, 100);
-            var lots = _data.State.Cash <= 0 ? 0 : Math.Min(scan.SuggestedLots,
-                (int)Math.Floor(_data.State.Cash * .20m / Math.Max(1, scan.LastPrice * 100)));
+            // ScanEngine has already allocated the exact fee-inclusive lot
+            // count at the exact limit price. Recalculating it here with the
+            // previous close would understate cash and execution risk.
+            var lots = scan.SuggestedLots;
             yield return new RecommendationItem
             {
                 Symbol = scan.Symbol,
                 Action = lots > 0 ? Loc.T("BUKA POSISI", "OPEN POSITION") : Loc.T("PANTAU", "WATCH"),
+                ActionCode = lots > 0 ? "OPEN_POSITION" : "WATCH",
                 Confidence = combinedScore >= 82 ? Loc.T("TINGGI", "HIGH") : Loc.T("SEDANG", "MEDIUM"),
+                ConfidenceScore = combinedScore,
                 SuggestedLots = lots,
                 EntryLow = scan.EntryLow,
                 EntryHigh = scan.EntryHigh,
                 ReferencePrice = scan.LastPrice,
                 Detail = lots > 0
-                    ? $"{lots} lot dengan limit Rp {scan.EntryHigh:N0}; batal jika opening di atas Rp {scan.MaxBuyPrice:N0}. " +
-                      $"Teknikal {scan.Score}/100, isu {eventView.Adjustment:+#;-#;0}."
+                    ? Loc.T(
+                        $"{lots} lot dengan limit Rp {scan.EntryHigh:N0}; batal jika opening di atas Rp {scan.MaxBuyPrice:N0}. " +
+                        $"Teknikal {scan.Score}/100, isu {eventView.Adjustment:+#;-#;0}.",
+                        $"{lots} lots with a Rp {scan.EntryHigh:N0} limit; cancel if the opening is above Rp {scan.MaxBuyPrice:N0}. " +
+                        $"Technical {scan.Score}/100, events {eventView.Adjustment:+#;-#;0}.")
                     : Loc.T("Setup lolos, tetapi kas belum cukup.", "Setup passed, but cash is insufficient."),
                 RiskDetail = $"Risk/reward {scan.RiskReward:N2}. {eventView.Summary}",
                 Stop = scan.StopLoss, Target = scan.Target1,
@@ -217,11 +263,10 @@ public sealed class DashboardPage : ContentPage
                 $"Limit Rp {item.EntryHigh:N0} · {item.SuggestedLots} lot",
                 $"Limit Rp {item.EntryHigh:N0} · {item.SuggestedLots} lots");
 
-        if (item.Action.Contains("SELL") || item.Action.Contains("REDUCE") ||
-            item.Action.Contains("JUAL") || item.Action.Contains("TAKE PROFIT"))
+        if (Loc.IsSellAction(item.ActionCode))
             return Loc.T(
-                $"Harga acuan Rp {item.ReferencePrice:N0} · buka detail untuk jumlah jual",
-                $"Reference Rp {item.ReferencePrice:N0} · open details for sell size");
+                $"Jual {item.ActionLots} lot · harga Rp {item.ExecutionPrice:N0}",
+                $"Sell {item.ActionLots} lots · price Rp {item.ExecutionPrice:N0}");
 
         return Loc.T(
             $"Pertahankan di harga acuan Rp {item.ReferencePrice:N0}",
@@ -268,7 +313,7 @@ public sealed class DashboardPage : ContentPage
                 Spacing = 8,
                 Children =
                 {
-                    MetricLine(Loc.T("Jumlah", "Quantity"), $"{p.Lots} lot"),
+                    MetricLine(Loc.T("Jumlah", "Quantity"), Loc.Lots(p.Lots)),
                     MetricLine(Loc.T("Modal", "Cost"), $"Rp {p.Cost:N0}"),
                     MetricLine(Loc.T("Nilai pasar", "Market value"), $"Rp {p.MarketValue:N0}"),
                     MetricLine("P/L", SignedRupiah(p.ProfitLoss),
@@ -303,29 +348,44 @@ public sealed class DashboardPage : ContentPage
         return grid;
     }
 
-    static Color ActionColor(string action) =>
-        action.Contains("SELL") || action.Contains("REDUCE") || action.Contains("JUAL")
+    static Color ActionColor(string actionCode) =>
+        Loc.IsSellAction(actionCode)
             ? UiKit.Red
-            : action.Contains("ADD") || action.Contains("AVERAGE") ||
-              action.Contains("BUKA") || action.Contains("OPEN")
-                ? UiKit.Green : UiKit.Blue;
+            : Loc.IsBuyAction(actionCode) || actionCode == "OPEN_POSITION"
+                ? UiKit.Green
+                : UiKit.Blue;
 
-    static int ActionPriority(string action) =>
-        action.Contains("SELL ALL") ? 100 : action.Contains("REDUCE") ? 90 :
-        action.Contains("TAKE PROFIT") ? 80 :
-        action.Contains("AVERAGE") || action.Contains("ADD") ? 70 : 30;
+    static int ActionPriority(string actionCode) => actionCode switch
+    {
+        "SELL_ALL" => 100,
+        "REDUCE" => 90,
+        "TAKE_PROFIT" => 80,
+        "AVERAGE_DOWN" or "ADD" => 70,
+        _ => 30
+    };
     static int ConfidencePriority(string confidence) =>
         confidence is "TINGGI" or "HIGH" ? 30 : confidence is "SEDANG" or "MEDIUM" ? 15 : 0;
     static string SignedRupiah(decimal value) => $"{(value >= 0 ? "+" : "")}Rp {value:N0}";
 
+    (int Adjustment, string Summary) EventView(string symbol) =>
+        _data.State.AutoEventIntelligence
+            ? _events.Summarize(symbol)
+            : (0, Loc.T(
+                "Analisis isu dinonaktifkan.",
+                "Event analysis is disabled."));
+
     sealed class RecommendationItem
     {
         public string Symbol { get; init; } = "";
+        public string ActionCode { get; init; } = "";
         public string Action { get; init; } = "";
         public string Confidence { get; init; } = "";
+        public int ConfidenceScore { get; init; }
         public string Detail { get; init; } = "";
         public string RiskDetail { get; init; } = "";
         public int SuggestedLots { get; init; }
+        public int ActionLots { get; init; }
+        public decimal ExecutionPrice { get; init; }
         public decimal EntryLow { get; init; }
         public decimal EntryHigh { get; init; }
         public decimal ReferencePrice { get; init; }

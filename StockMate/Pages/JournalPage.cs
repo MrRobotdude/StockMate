@@ -10,7 +10,7 @@ public sealed class JournalPage : ContentPage
     readonly TransactionHistoryService _history;
     readonly VerticalStackLayout _list = new() { Spacing = 10 };
     readonly Label _importInfo = UiKit.Sub("");
-    readonly SearchBar _search = new() { Placeholder = "Cari kode / Search symbol…" };
+    readonly SearchBar _search = new() { Placeholder = Loc.T("Cari kode / Search symbol…") };
     readonly Picker _side = new() { Title = "BUY / SELL" };
     readonly Picker _source = new() { Title = "Sumber / Source" };
     readonly Picker _period = new() { Title = "Periode / Period" };
@@ -26,10 +26,27 @@ public sealed class JournalPage : ContentPage
         _data = data; _history = history;
         Title = Loc.T("Transaksi", "Transactions");
         BackgroundColor = UiKit.Navy;
-        _side.ItemsSource = new[] { "Semua", "BUY", "SELL" };
-        _source.ItemsSource = new[] { "Semua sumber", "HISTORY", "MANUAL", "IPO_SYNC", "TRANSFER_SYNC", "OTHER_SYNC", "Dikoreksi" };
-        _period.ItemsSource = new[] { "Semua waktu", "7 hari", "30 hari", "Bulan ini", "Tahun ini" };
-        _sort.ItemsSource = new[] { "Terbaru", "Terlama", "Nilai terbesar", "Nilai terkecil", "Kode A–Z", "Fee terbesar" };
+        _side.ItemsSource = new[] { Loc.T("Semua", "All"), "BUY", "SELL" };
+        _source.ItemsSource = new[]
+        {
+            Loc.T("Semua sumber"),
+            Loc.T("History broker", "Broker history"),
+            Loc.T("Manual", "Manual"),
+            Loc.T("Sync Up IPO", "IPO Sync Up"),
+            Loc.T("Transfer masuk", "Incoming transfer"),
+            Loc.T("Perolehan lain", "Other acquisition"),
+            Loc.T("Dikoreksi", "Corrected")
+        };
+        _period.ItemsSource = new[]
+        {
+            Loc.T("Semua waktu"), Loc.T("7 hari"), Loc.T("30 hari"),
+            Loc.T("Bulan ini"), Loc.T("Tahun ini")
+        };
+        _sort.ItemsSource = new[]
+        {
+            Loc.T("Terbaru"), Loc.T("Terlama"), Loc.T("Nilai terbesar"),
+            Loc.T("Nilai terkecil"), Loc.T("Kode A–Z"), Loc.T("Fee terbesar")
+        };
         foreach (var picker in new[] { _side, _source, _period, _sort }) picker.SelectedIndex = 0;
         _search.TextChanged += (_, _) => ResetRender();
         _side.SelectedIndexChanged += (_, _) => ResetRender();
@@ -68,18 +85,27 @@ public sealed class JournalPage : ContentPage
     {
         _list.Children.Clear();
         var realized = _data.GetRealizedSummary();
-        _importInfo.Text = $"{_data.State.TransactionImports.Count} file history • " +
-            $"{Loc.T("Realized", "Realized")} Rp {realized.DisplayValue:N0} • Fee Rp {realized.Fees:N0}";
+        _importInfo.Text = Loc.T(
+            $"{_data.State.TransactionImports.Count} file riwayat • " +
+            $"Realized Rp {realized.DisplayValue:N0} • Fee Rp {realized.Fees:N0}",
+            $"{_data.State.TransactionImports.Count} history files • " +
+            $"Realized Rp {realized.DisplayValue:N0} • Fees Rp {realized.Fees:N0}");
 
         IEnumerable<TradeTransaction> query = _data.State.Transactions;
         if (!string.IsNullOrWhiteSpace(_search.Text))
             query = query.Where(x => x.Symbol.Contains(_search.Text.Trim(), StringComparison.OrdinalIgnoreCase));
         var side = _side.SelectedItem?.ToString();
         if (side is "BUY" or "SELL") query = query.Where(x => x.Side == side);
-        var source = _source.SelectedItem?.ToString() ?? "Semua sumber";
-        if (source == "Dikoreksi") query = query.Where(x => !x.IsActive);
-        else if (source != "Semua sumber") query = query.Where(x => x.Source == source && x.IsActive);
-        else query = query.Where(x => x.IsActive);
+        query = _source.SelectedIndex switch
+        {
+            1 => query.Where(x => x.Source == "HISTORY" && x.IsActive),
+            2 => query.Where(x => x.Source == "MANUAL" && x.IsActive),
+            3 => query.Where(x => x.Source == "IPO_SYNC" && x.IsActive),
+            4 => query.Where(x => x.Source == "TRANSFER_SYNC" && x.IsActive),
+            5 => query.Where(x => x.Source == "OTHER_SYNC" && x.IsActive),
+            6 => query.Where(x => !x.IsActive),
+            _ => query.Where(x => x.IsActive)
+        };
         var today = DateTime.Today;
         query = _period.SelectedIndex switch
         {
@@ -106,18 +132,22 @@ public sealed class JournalPage : ContentPage
         foreach (var tx in filtered.Skip((_page - 1) * PageSize).Take(PageSize))
             _list.Children.Add(UiKit.ExpandableCard(
                 $"{tx.Side} · {tx.Symbol}",
-                $"{tx.Lots} lot · Rp {tx.GrossValue:N0}",
+                $"{Loc.Lots(tx.Lots)} · Rp {tx.GrossValue:N0}",
                 new VerticalStackLayout
                 {
                     Spacing = 8,
                     Children =
                     {
-                        UiKit.Sub($"Rp {tx.Price:N0} / lembar"),
+                        UiKit.Sub(Loc.T(
+                            $"Rp {tx.Price:N0} / lembar",
+                            $"Rp {tx.Price:N0} / share")),
                         UiKit.Sub($"Fee Rp {tx.Fee:N0}"),
                         UiKit.Sub($"{tx.Time:dd MMM yyyy HH:mm}"),
-                        UiKit.Sub($"{Loc.T("Sumber", "Source")}: {tx.Source}"),
+                        UiKit.Sub($"{Loc.T("Sumber", "Source")}: {SourceLabel(tx.Source)}"),
                         UiKit.Sub($"{Loc.T("Status", "Status")}: {(tx.IsActive ? Loc.T("Aktif","Active") : Loc.T("Dikoreksi","Corrected"))}"),
-                        UiKit.Sub(string.IsNullOrWhiteSpace(tx.Note) ? "—" : tx.Note)
+                        UiKit.Sub(string.IsNullOrWhiteSpace(tx.Note)
+                            ? "—"
+                            : LocalizeAutomaticNote(tx.Note))
                     }
                 },
                 tx.IsActive ? Loc.T("AKTIF", "ACTIVE") : Loc.T("DIKOREKSI", "CORRECTED"),
@@ -138,5 +168,46 @@ public sealed class JournalPage : ContentPage
             Render();
         }
         catch (Exception ex) { await AppDialog.ShowAsync(this, Loc.T("Impor gagal", "Import failed"), ex.Message, danger: true); }
+    }
+
+    static string SourceLabel(string source) => source switch
+    {
+        "HISTORY" => Loc.T("History broker", "Broker history"),
+        "MANUAL" => Loc.T("Manual", "Manual"),
+        "IPO_SYNC" => Loc.T("Sync Up IPO", "IPO Sync Up"),
+        "TRANSFER_SYNC" => Loc.T("Transfer masuk", "Incoming transfer"),
+        "OTHER_SYNC" => Loc.T("Perolehan lain", "Other acquisition"),
+        _ => source
+    };
+
+    static string LocalizeAutomaticNote(string note)
+    {
+        if (note.Equals("Impor Transaction History",
+                StringComparison.OrdinalIgnoreCase))
+            return Loc.T(
+                "Impor Transaction History",
+                "Imported Transaction History");
+        if (Loc.English &&
+            note.StartsWith("Impor e-Statement Stockbit;",
+                StringComparison.OrdinalIgnoreCase))
+            return note
+                .Replace("Impor e-Statement Stockbit",
+                    "Imported Stockbit e-Statement",
+                    StringComparison.OrdinalIgnoreCase)
+                .Replace("sales tax tercatat",
+                    "recorded sales tax",
+                    StringComparison.OrdinalIgnoreCase)
+                .Replace("total fee diestimasi dari tarif broker",
+                    "total fees estimated from broker rates",
+                    StringComparison.OrdinalIgnoreCase);
+        if (Loc.English)
+            return note.Replace(
+                "cost basis dilengkapi saat Sync Up",
+                "cost basis completed during Sync Up",
+                StringComparison.OrdinalIgnoreCase);
+        return note.Replace(
+            "cost basis completed during Sync Up",
+            "cost basis dilengkapi saat Sync Up",
+            StringComparison.OrdinalIgnoreCase);
     }
 }

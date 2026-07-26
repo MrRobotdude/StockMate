@@ -11,17 +11,18 @@ public sealed class SyncUpPage : ContentPage
     readonly Entry _cash = new()
     {
         Keyboard = Keyboard.Numeric,
-        Placeholder = "Contoh: 876436",
+        Placeholder = Loc.T("Contoh: 876436", "Example: 876436"),
         TextColor = Colors.White
     };
     readonly Entry _officialRealized = new()
     {
         Keyboard = Keyboard.Numeric,
-        Placeholder = "Contoh: -56961",
+        Placeholder = Loc.T("Contoh: -56961", "Example: -56961"),
         TextColor = Colors.White
     };
     readonly Label _status = UiKit.Sub(
-        "Lengkapi perolehan saham yang tidak muncul sebagai BUY (misalnya penjatahan IPO), lalu masukkan Trading Balance Stockbit saat ini.");
+        Loc.T("Lengkapi perolehan saham yang tidak muncul sebagai BUY (misalnya penjatahan IPO), lalu masukkan Trading Balance Stockbit saat ini."));
+    bool _saving;
 
     public SyncUpPage(AppDataService data)
     {
@@ -29,7 +30,7 @@ public sealed class SyncUpPage : ContentPage
         Title = "Sync Up";
         BackgroundColor = UiKit.Navy;
 
-        var save = UiKit.Primary("Simpan dan validasi");
+        var save = UiKit.Primary(Loc.T("Simpan dan validasi"));
         save.Clicked += async (_, _) => await SaveAsync();
 
         var root = UiKit.PageStack();
@@ -57,7 +58,7 @@ public sealed class SyncUpPage : ContentPage
             {
                 UiKit.SectionTitle("Trading Balance"),
                 _cash,
-                UiKit.Caption("Masukkan saldo kas, bukan total equity atau nilai saham.")
+                UiKit.Caption(Loc.T("Masukkan saldo kas, bukan total equity atau nilai saham."))
             }
         }));
         root.Children.Add(UiKit.Box(new VerticalStackLayout
@@ -67,7 +68,7 @@ public sealed class SyncUpPage : ContentPage
             {
                 UiKit.SectionTitle("Realized P/L"),
                 _officialRealized,
-                UiKit.Caption("Gunakan periode yang sama dengan e-Statement. Tanda minus berarti rugi.")
+                UiKit.Caption(Loc.T("Gunakan periode yang sama dengan e-Statement. Tanda minus berarti rugi."))
             }
         }));
         root.Children.Add(save);
@@ -76,65 +77,109 @@ public sealed class SyncUpPage : ContentPage
 
     async Task SaveAsync()
     {
-        await UiKit.RunBusyAsync(this, Loc.T("Menyimpan dan memvalidasi…", "Saving and validating…"), async () =>
+        if (_saving) return;
+        _saving = true;
+        var completed = false;
+        try
         {
-        foreach (var missing in _data.GetMissingCostBasis())
-        {
-            if (!_basisInputs.TryGetValue(missing.Symbol, out var input) ||
-                !int.TryParse(input.Lots.Text, out var lots) ||
-                !decimal.TryParse(input.Price.Text, out var price))
+            await UiKit.RunBusyAsync(this,
+                Loc.T("Menyimpan dan memvalidasi…", "Saving and validating…"),
+                async () =>
+                {
+                    foreach (var missing in _data.GetMissingCostBasis())
+                    {
+                        if (!_basisInputs.TryGetValue(
+                                missing.Symbol, out var input) ||
+                            !int.TryParse(input.Lots.Text, out var lots) ||
+                            !decimal.TryParse(input.Price.Text, out var price))
+                        {
+                            _status.Text = Loc.T(
+                                $"{missing.Symbol}: lengkapi lot dan harga perolehan terlebih dahulu.",
+                                $"{missing.Symbol}: enter the acquisition lots and price first.");
+                            return;
+                        }
+                        var fee = 0m;
+                        if (!string.IsNullOrWhiteSpace(input.Fee.Text) &&
+                            !decimal.TryParse(input.Fee.Text, out fee))
+                        {
+                            _status.Text = Loc.T(
+                                $"{missing.Symbol}: biaya perolehan tidak valid.",
+                                $"{missing.Symbol}: the acquisition fee is invalid.");
+                            return;
+                        }
+                        var saved =
+                            await _data.UpsertExternalAcquisitionAsync(
+                                missing, lots, price, fee,
+                                input.Type.SelectedItem?.ToString() ?? "IPO");
+                        if (!saved.Ok)
+                        {
+                            _status.Text = saved.Message;
+                            return;
+                        }
+                    }
+
+                    var unresolved = _data.GetMissingCostBasis();
+                    if (unresolved.Count > 0)
+                    {
+                        _status.Text = Loc.T(
+                            $"Sync Up belum lengkap: {string.Join(", ", unresolved.Select(x => x.Symbol))} masih tidak memiliki cost basis.",
+                            $"Sync Up is incomplete: {string.Join(", ", unresolved.Select(x => x.Symbol))} still has no cost basis.");
+                        return;
+                    }
+
+                    if (!decimal.TryParse(
+                            _cash.Text, out var currentCash) ||
+                        currentCash < 0)
+                    {
+                        _status.Text = Loc.T(
+                            "Saldo kas tidak valid. Masukkan Trading Balance Stockbit dalam angka.",
+                            "The cash balance is invalid. Enter the numeric Stockbit Trading Balance.");
+                        return;
+                    }
+                    if (!decimal.TryParse(
+                            _officialRealized.Text, out var officialRealized))
+                    {
+                        _status.Text = Loc.T(
+                            "Realized P/L resmi tidak valid. Gunakan tanda minus untuk rugi, misalnya -56961.",
+                            "The official realized P/L is invalid. Use a minus sign for a loss, for example -56961.");
+                        return;
+                    }
+
+                    var activeFlows = _data.State.Transactions
+                        .Where(x => x.IsActive && x.AffectsCash)
+                        .Sum(x => x.NetCashFlow);
+                    _data.State.CashOpeningBalance =
+                        currentCash - activeFlows;
+                    _data.State.CashReconciled = true;
+                    _data.State.CashReconciledAt = DateTime.Now;
+                    _data.State.OfficialRealizedProfit =
+                        officialRealized;
+                    _data.State.RealizedReconciledAt = DateTime.Now;
+                    _data.RecalculateCash();
+                    await _data.SaveAsync();
+                    completed = true;
+                });
+
+            if (completed && Window is not null)
             {
-                _status.Text = $"{missing.Symbol}: lengkapi lot dan harga perolehan terlebih dahulu.";
-                return;
-            }
-            var fee = 0m;
-            if (!string.IsNullOrWhiteSpace(input.Fee.Text) &&
-                !decimal.TryParse(input.Fee.Text, out fee))
-            {
-                _status.Text = $"{missing.Symbol}: biaya perolehan tidak valid.";
-                return;
-            }
-            var saved = await _data.UpsertExternalAcquisitionAsync(
-                missing, lots, price, fee, input.Type.SelectedItem?.ToString() ?? "IPO");
-            if (!saved.Ok)
-            {
-                _status.Text = saved.Message;
-                return;
+                var window = Window;
+                await MainThread.InvokeOnMainThreadAsync(() =>
+                    window.Page = new AppShell());
             }
         }
-
-        var unresolved = _data.GetMissingCostBasis();
-        if (unresolved.Count > 0)
+        catch (Exception ex)
         {
-            _status.Text = $"Sync Up belum lengkap: {string.Join(", ", unresolved.Select(x => x.Symbol))} masih tidak memiliki cost basis.";
-            return;
+            _status.Text = Loc.T(
+                $"Sync Up gagal: {ex.Message}",
+                $"Sync Up failed: {ex.Message}");
+            await AppDialog.ShowAsync(
+                this, Loc.T("Gagal", "Failed"), _status.Text,
+                danger: true);
         }
-
-        if (!decimal.TryParse(_cash.Text, out var currentCash) || currentCash < 0)
+        finally
         {
-            _status.Text = "Saldo kas tidak valid. Masukkan Trading Balance Stockbit dalam angka.";
-            return;
+            _saving = false;
         }
-        if (!decimal.TryParse(_officialRealized.Text, out var officialRealized))
-        {
-            _status.Text = "Realized P/L resmi tidak valid. Gunakan tanda minus untuk rugi, misalnya -56961.";
-            return;
-        }
-
-        var activeFlows = _data.State.Transactions
-            .Where(x => x.IsActive && x.AffectsCash)
-            .Sum(x => x.NetCashFlow);
-        _data.State.CashOpeningBalance = currentCash - activeFlows;
-        _data.State.CashReconciled = true;
-        _data.State.CashReconciledAt = DateTime.Now;
-        _data.State.OfficialRealizedProfit = officialRealized;
-        _data.State.RealizedReconciledAt = DateTime.Now;
-        _data.RecalculateCash();
-        await _data.SaveAsync();
-
-        if (Window is not null)
-            Window.Page = new AppShell();
-        });
     }
 
     void BuildMissingBasisCards()
@@ -145,40 +190,47 @@ public sealed class SyncUpPage : ContentPage
             {
                 Keyboard = Keyboard.Numeric,
                 Text = missing.MinimumLots.ToString(),
-                Placeholder = "Jumlah lot perolehan",
+                Placeholder = Loc.T("Jumlah lot perolehan"),
                 TextColor = Colors.White
             };
             var price = new Entry
             {
                 Keyboard = Keyboard.Numeric,
-                Placeholder = "Harga IPO / average perolehan",
+                Placeholder = Loc.T("Harga IPO / average perolehan"),
                 TextColor = Colors.White
             };
             var fee = new Entry
             {
                 Keyboard = Keyboard.Numeric,
-                Placeholder = "Total biaya perolehan (opsional)",
+                Placeholder = Loc.T("Total biaya perolehan (opsional)"),
                 TextColor = Colors.White
             };
             var type = new Picker
             {
-                Title = "Jenis perolehan",
+                Title = Loc.T("Jenis perolehan"),
                 TextColor = Colors.White,
-                ItemsSource = new[] { "IPO", "Transfer masuk", "Perolehan lain" },
+                ItemsSource = new[]
+                {
+                    "IPO", Loc.T("Transfer masuk"), Loc.T("Perolehan lain")
+                },
                 SelectedIndex = 0
             };
             _basisInputs[missing.Symbol] = (lots, price, fee, type);
             _missingList.Children.Add(UiKit.ExpandableCard(
                 missing.Symbol,
-                $"Minimal {missing.MinimumLots} lot · {missing.MissingShares:N0} saham",
+                Loc.T(
+                    $"Minimal {missing.MinimumLots} lot · {missing.MissingShares:N0} saham",
+                    $"Minimum {missing.MinimumLots} lots · {missing.MissingShares:N0} shares"),
                 new VerticalStackLayout
                 {
                     Spacing = 8,
                     Children =
                     {
-                        UiKit.Sub($"Penjualan pertama tanpa modal: {missing.FirstUncoveredSellDate:dd MMM yyyy}."),
+                        UiKit.Sub(Loc.T(
+                            $"Penjualan pertama tanpa modal: {missing.FirstUncoveredSellDate:dd MMM yyyy}.",
+                            $"First sale without cost basis: {missing.FirstUncoveredSellDate:dd MMM yyyy}.")),
                         type, lots, price, fee,
-                        UiKit.Caption("Untuk IPO, lot boleh lebih besar dari minimum. Sisanya menjadi posisi aktif.")
+                        UiKit.Caption(Loc.T("Untuk IPO, lot boleh lebih besar dari minimum. Sisanya menjadi posisi aktif."))
                     }
                 },
                 Loc.T("LENGKAPI", "COMPLETE"), UiKit.Red,

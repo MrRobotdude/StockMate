@@ -72,10 +72,17 @@ public sealed class ScanProgress
 public sealed class PortfolioDecision
 {
     public string Symbol { get; set; } = "";
+    // Stable machine-readable action. UI text is localized when rendered.
+    public string ActionCode { get; set; } = "HOLD";
     public string Action { get; set; } = "HOLD";
-    public string Confidence { get; set; } = "RENDAH";
+    public string Confidence { get; set; } = "LOW";
+    public int ConfidenceScore { get; set; }
     public int Score { get; set; }
+    // SuggestedLots is only used for BUY/ADD. ActionLots is the exact amount
+    // to sell for REDUCE, TAKE_PROFIT, and SELL_ALL.
     public int SuggestedLots { get; set; }
+    public int ActionLots { get; set; }
+    public decimal ExecutionPrice { get; set; }
     public decimal ReferencePrice { get; set; }
     public decimal EntryLow { get; set; }
     public decimal EntryHigh { get; set; }
@@ -268,6 +275,8 @@ public sealed class ScanResult
     public string Symbol { get; set; } = "";
     public string Verdict { get; set; } = "WATCH";
     public int Score { get; set; }
+    public int EventAdjustment { get; set; }
+    public int CombinedScore { get; set; }
     public decimal LastPrice { get; set; }
     public decimal EntryLow { get; set; }
     public decimal EntryHigh { get; set; }
@@ -280,11 +289,15 @@ public sealed class ScanResult
     public DateTime DataTime { get; set; }
     public string DataSession { get; set; } = "";
     public string Reasons { get; set; } = "";
+    public string ReasonsEn { get; set; } = "";
     public string Risks { get; set; } = "";
+    public string RisksEn { get; set; } = "";
     public bool IsSpeculative { get; set; }
     public int AllocationRank { get; set; }
     public decimal AllocatedCash { get; set; }
     public string ExecutionNote { get; set; } = "";
+    public string ExecutionNoteEn { get; set; } = "";
+    public int MaximumHoldingDays { get; set; } = 20;
 }
 
 public sealed class ScanRun
@@ -313,6 +326,10 @@ public sealed class PredictionRecord
     public decimal StopLoss { get; set; }
     public decimal Target1 { get; set; }
     public DateTime PredictedAt { get; set; } = DateTime.Now;
+    public DateTime SignalDate { get; set; }
+    public DateTime? EntryFilledAt { get; set; }
+    public decimal? FilledPrice { get; set; }
+    public int MaximumHoldingDays { get; set; } = 20;
     public string DataSession { get; set; } = "";
     public DateTime? EvaluatedAt { get; set; }
     public decimal? EvaluationPrice { get; set; }

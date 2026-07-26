@@ -13,16 +13,21 @@ public static class BackgroundScanScheduler
     const int LunchRequest = 1215;
     const int EveningRequest = 1630;
     const int OpeningEventsRequest = 845;
+    const int OpeningEventsRetryRequest = 846;
     const int RetryRequest = 1712;
 
     public static void ScheduleDaily(Context context)
     {
         // Morning pull uses yesterday's completed candle so recommendations
         // can be ready before IDX pre-opening.
-        ScheduleSession(context, MorningRequest, 7, 0, false, downloadOnly: true);
-        ScheduleSession(context, LunchRequest, 12, 15, true);
-        ScheduleSession(context, EveningRequest, 16, 30, false);
-        ScheduleSession(context, OpeningEventsRequest, 8, 45, false, eventOnly: true);
+        TrySchedule(() => ScheduleSession(
+            context, MorningRequest, 7, 0, false));
+        TrySchedule(() => ScheduleSession(
+            context, LunchRequest, 12, 15, true));
+        TrySchedule(() => ScheduleSession(
+            context, EveningRequest, 16, 30, false));
+        TrySchedule(() => ScheduleSession(
+            context, OpeningEventsRequest, 8, 45, false, eventOnly: true));
     }
 
     public static bool HasExactAlarmAccess(Context context)
@@ -35,10 +40,19 @@ public static class BackgroundScanScheduler
     public static void OpenExactAlarmSettings(Context context)
     {
         if (Build.VERSION.SdkInt < BuildVersionCodes.S) return;
-        var intent = new Intent(Settings.ActionRequestScheduleExactAlarm)
-            .SetData(global::Android.Net.Uri.Parse($"package:{context.PackageName}"))
-            .AddFlags(ActivityFlags.NewTask);
-        context.StartActivity(intent);
+        try
+        {
+            var intent = new Intent(Settings.ActionRequestScheduleExactAlarm)
+                .SetData(global::Android.Net.Uri.Parse($"package:{context.PackageName}"))
+                .AddFlags(ActivityFlags.NewTask);
+            context.StartActivity(intent);
+        }
+        catch (Exception ex)
+        {
+            global::Android.Util.Log.Warn(
+                "StockMateAlarmSettings", ex.ToString());
+            TryOpenGeneralSettings(context);
+        }
     }
 
     public static void OpenBatteryOptimizationSettings(Context context)
@@ -48,10 +62,25 @@ public static class BackgroundScanScheduler
             context.StartActivity(new Intent(Settings.ActionIgnoreBatteryOptimizationSettings)
                 .AddFlags(ActivityFlags.NewTask));
         }
-        catch (ActivityNotFoundException)
+        catch (Exception ex)
+        {
+            global::Android.Util.Log.Warn(
+                "StockMateBatterySettings", ex.ToString());
+            TryOpenGeneralSettings(context);
+        }
+    }
+
+    static void TryOpenGeneralSettings(Context context)
+    {
+        try
         {
             context.StartActivity(new Intent(Settings.ActionSettings)
                 .AddFlags(ActivityFlags.NewTask));
+        }
+        catch (Exception ex)
+        {
+            global::Android.Util.Log.Warn(
+                "StockMateGeneralSettings", ex.ToString());
         }
     }
 
@@ -62,15 +91,38 @@ public static class BackgroundScanScheduler
         Cancel(context, EveningRequest);
         Cancel(context, RetryRequest);
         Cancel(context, OpeningEventsRequest);
+        Cancel(context, OpeningEventsRetryRequest);
     }
 
     public static void ScheduleRetry(Context context, bool intraday, TimeSpan delay)
     {
-        var alarm = (AlarmManager?)context.GetSystemService(Context.AlarmService);
-        if (alarm is null) return;
-        var trigger = Java.Lang.JavaSystem.CurrentTimeMillis() + (long)delay.TotalMilliseconds;
-        var pending = CreatePendingIntent(context, RetryRequest, intraday, true);
-        SetAlarm(alarm, trigger, pending);
+        TrySchedule(() =>
+        {
+            var alarm = (AlarmManager?)context.GetSystemService(
+                Context.AlarmService);
+            if (alarm is null) return;
+            var trigger = Java.Lang.JavaSystem.CurrentTimeMillis() +
+                          (long)delay.TotalMilliseconds;
+            var pending = CreatePendingIntent(
+                context, RetryRequest, intraday, true);
+            SetAlarm(alarm, trigger, pending);
+        });
+    }
+
+    public static void ScheduleEventRetry(Context context, TimeSpan delay)
+    {
+        TrySchedule(() =>
+        {
+            var alarm = (AlarmManager?)context.GetSystemService(
+                Context.AlarmService);
+            if (alarm is null) return;
+            var trigger = Java.Lang.JavaSystem.CurrentTimeMillis() +
+                          (long)delay.TotalMilliseconds;
+            var pending = CreatePendingIntent(
+                context, OpeningEventsRetryRequest, false, true,
+                eventOnly: true);
+            SetAlarm(alarm, trigger, pending);
+        });
     }
 
     static void ScheduleSession(
@@ -121,6 +173,19 @@ public static class BackgroundScanScheduler
         else
             alarm.Set(AlarmType.RtcWakeup, trigger, pending);
     }
+
+    static void TrySchedule(Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception ex)
+        {
+            global::Android.Util.Log.Warn(
+                "StockMateScheduler", ex.ToString());
+        }
+    }
 }
 
 [SupportedOSPlatform("android")]
@@ -130,20 +195,35 @@ public sealed class BackgroundScanAlarmReceiver : BroadcastReceiver
     public override void OnReceive(Context? context, Intent? intent)
     {
         if (context is null) return;
-        var intraday = intent?.GetBooleanExtra("intraday", false) ?? false;
-        var eventOnly = intent?.GetBooleanExtra("eventOnly", false) ?? false;
-        var downloadOnly = intent?.GetBooleanExtra("downloadOnly", false) ?? false;
-        BackgroundScanScheduler.ScheduleDaily(context);
-        var service = new Intent(context, typeof(ScanForegroundService))
-            .PutExtra("intraday", intraday)
-            .PutExtra("force", false)
-            .PutExtra("scheduled", true)
-            .PutExtra("eventOnly", eventOnly)
-            .PutExtra("downloadOnly", downloadOnly);
-        if (Build.VERSION.SdkInt >= BuildVersionCodes.O)
-            context.StartForegroundService(service);
-        else
-            context.StartService(service);
+        try
+        {
+            var intraday =
+                intent?.GetBooleanExtra("intraday", false) ?? false;
+            var eventOnly =
+                intent?.GetBooleanExtra("eventOnly", false) ?? false;
+            var downloadOnly =
+                intent?.GetBooleanExtra("downloadOnly", false) ?? false;
+            BackgroundScanScheduler.ScheduleDaily(context);
+            var service = new Intent(
+                    context, typeof(ScanForegroundService))
+                .PutExtra("intraday", intraday)
+                .PutExtra("force", false)
+                .PutExtra("scheduled", true)
+                .PutExtra("eventOnly", eventOnly)
+                .PutExtra("downloadOnly", downloadOnly);
+            if (Build.VERSION.SdkInt >= BuildVersionCodes.O)
+                context.StartForegroundService(service);
+            else
+                context.StartService(service);
+        }
+        catch (Exception ex)
+        {
+            // Android may reject a background foreground-service start on
+            // vendor-specific battery policies. Log it instead of allowing the
+            // BroadcastReceiver callback to escape as JavaProxyThrowable.
+            global::Android.Util.Log.Error(
+                "StockMateAlarmReceiver", ex.ToString());
+        }
     }
 }
 
@@ -157,7 +237,15 @@ public sealed class BackgroundScanBootReceiver : BroadcastReceiver
 {
     public override void OnReceive(Context? context, Intent? intent)
     {
-        if (context is not null)
+        if (context is null) return;
+        try
+        {
             BackgroundScanScheduler.ScheduleDaily(context);
+        }
+        catch (Exception ex)
+        {
+            global::Android.Util.Log.Error(
+                "StockMateBootReceiver", ex.ToString());
+        }
     }
 }

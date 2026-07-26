@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using StockMate.Models;
+using StockMate.Ui;
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.DocumentLayoutAnalysis.TextExtractor;
 
@@ -28,12 +29,15 @@ public sealed class TransactionHistoryService(AppDataService data)
         var text = isPdf
             ? await Task.Run(() => ExtractPdfText(bytes))
             : Encoding.UTF8.GetString(bytes);
-        if (string.IsNullOrWhiteSpace(text)) return (false, "File kosong.");
+        if (string.IsNullOrWhiteSpace(text))
+            return (false, Loc.T("File kosong.", "The file is empty."));
 
         var fingerprint = Convert.ToHexString(SHA256.HashData(bytes));
         var rows = await Task.Run(() => isPdf ? ParseStockbitPdf(text) : Parse(text));
         if (rows.Count == 0)
-            return (false, "Tidak ada transaksi BUY/SELL yang dikenali. Format yang didukung: e-Statement PDF Stockbit serta CSV/TSV transaction history.");
+            return (false, Loc.T(
+                "Tidak ada transaksi BUY/SELL yang dikenali. Format yang didukung: e-Statement PDF Stockbit serta CSV/TSV transaction history.",
+                "No recognizable BUY/SELL transactions were found. Supported formats are Stockbit e-Statement PDF and CSV/TSV transaction history."));
 
         var start = rows.Min(x => x.Time).Date;
         var end = rows.Max(x => x.Time).Date.AddDays(1).AddTicks(-1);
@@ -104,13 +108,19 @@ public sealed class TransactionHistoryService(AppDataService data)
         data.RecalculateCash();
         await data.SaveAsync();
         var feeNote = isPdf
-            ? " Biaya broker diestimasi dengan tarif pada Pengaturan; cocokkan realized resmi saat Sync Up."
+            ? Loc.T(
+                " Biaya broker diestimasi dengan tarif pada Pengaturan; cocokkan realized resmi saat Sync Up.",
+                " Broker fees are estimated using the rates in Settings; reconcile the official realized P/L during Sync Up.")
             : "";
-        return (true,
+        return (true, Loc.T(
             $"Impor selesai untuk {rows.Count} baris {start:dd MMM yyyy}–{end:dd MMM yyyy}: " +
             $"{batch.AddedCount} transaksi baru, {batch.SkippedDuplicateCount} overlap dilewati. " +
             $"{batch.SupersededManualCount} transaksi manual dinonaktifkan dan tidak lagi memengaruhi portofolio. " +
-            $"Kas dan realized resmi yang sudah direkonsiliasi tetap dipertahankan.{feeNote}");
+            $"Kas dan realized resmi yang sudah direkonsiliasi tetap dipertahankan.{feeNote}",
+            $"Import completed for {rows.Count} rows from {start:dd MMM yyyy} to {end:dd MMM yyyy}: " +
+            $"{batch.AddedCount} new transactions and {batch.SkippedDuplicateCount} overlapping rows skipped. " +
+            $"{batch.SupersededManualCount} manual transactions were disabled and no longer affect the portfolio. " +
+            $"Previously reconciled cash and official realized P/L were preserved.{feeNote}"));
     }
 
     static string IdentityKey(TradeTransaction tx)

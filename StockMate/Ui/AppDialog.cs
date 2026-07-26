@@ -20,14 +20,15 @@ public static class AppDialog
 
         var completion = new TaskCompletionSource<string?>(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var closingFromButton = false;
         var page = new ContentPage
         {
-            Title = title,
+            Title = Loc.T(title),
             BackgroundColor = UiKit.Navy
         };
         var search = new SearchBar
         {
-            Placeholder = "Cari kode, contoh TLKM",
+            Placeholder = Loc.T("Cari kode, contoh TLKM"),
             TextColor = Colors.White,
             PlaceholderColor = UiKit.Muted,
             BackgroundColor = UiKit.Surface
@@ -45,8 +46,9 @@ public static class AppDialog
                 var button = UiKit.Secondary(symbol);
                 button.Clicked += async (_, _) =>
                 {
+                    closingFromButton = true;
+                    await CloseModalAsync(owner.Navigation);
                     completion.TrySetResult(symbol);
-                    await owner.Navigation.PopModalAsync();
                 };
                 list.Children.Add(button);
             }
@@ -58,8 +60,9 @@ public static class AppDialog
         var cancel = UiKit.Tertiary("Batal");
         cancel.Clicked += async (_, _) =>
         {
+            closingFromButton = true;
+            await CloseModalAsync(owner.Navigation);
             completion.TrySetResult(null);
-            await owner.Navigation.PopModalAsync();
         };
         var layout = new Grid
         {
@@ -73,7 +76,11 @@ public static class AppDialog
         layout.Add(scroll, 0, 1);
         layout.Add(cancel, 0, 2);
         page.Content = layout;
-        page.Disappearing += (_, _) => completion.TrySetResult(null);
+        page.Disappearing += (_, _) =>
+        {
+            if (!closingFromButton)
+                completion.TrySetResult(null);
+        };
         Render(null);
         await owner.Navigation.PushModalAsync(new NavigationPage(page));
         search.Focus();
@@ -94,6 +101,7 @@ public static class AppDialog
     {
         var completion = new TaskCompletionSource<string?>(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var closingFromButton = false;
         var entry = new Entry
         {
             Text = initialValue, Keyboard = keyboard ?? Keyboard.Default,
@@ -101,31 +109,37 @@ public static class AppDialog
             BackgroundColor = UiKit.Surface, HeightRequest = 50
         };
         var page = new ContentPage { BackgroundColor = Color.FromArgb("#B3000712") };
-        var save = UiKit.Primary("Simpan");
-        var cancel = UiKit.Secondary("Batal");
+        var save = UiKit.Primary(Loc.T("Simpan"));
+        var cancel = UiKit.Secondary(Loc.T("Batal"));
         save.Clicked += async (_, _) =>
         {
+            closingFromButton = true;
+            await CloseModalAsync(page.Navigation);
             completion.TrySetResult(entry.Text);
-            await page.Navigation.PopModalAsync();
         };
         cancel.Clicked += async (_, _) =>
         {
+            closingFromButton = true;
+            await CloseModalAsync(page.Navigation);
             completion.TrySetResult(null);
-            await page.Navigation.PopModalAsync();
         };
         var card = UiKit.Box(new VerticalStackLayout
         {
             Spacing = 12,
             Children =
             {
-                new Label { Text = title, FontSize = 21, FontAttributes = FontAttributes.Bold,
+                new Label { Text = Loc.T(title), FontSize = 21, FontAttributes = FontAttributes.Bold,
                     TextColor = Colors.White },
-                UiKit.Sub(message), entry, save, cancel
+                UiKit.Sub(Loc.T(message)), entry, save, cancel
             }
         });
         card.Margin = new Thickness(24);
         page.Content = new Grid { VerticalOptions = LayoutOptions.Center, Children = { card } };
-        page.Disappearing += (_, _) => completion.TrySetResult(null);
+        page.Disappearing += (_, _) =>
+        {
+            if (!closingFromButton)
+                completion.TrySetResult(null);
+        };
         await owner.Navigation.PushModalAsync(page);
         entry.Focus();
         return await completion.Task;
@@ -136,22 +150,25 @@ public static class AppDialog
     {
         var completion = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var closingFromButton = false;
         var page = new ContentPage { BackgroundColor = Color.FromArgb("#B3000712") };
-        var primary = UiKit.Primary(confirm);
+        var primary = UiKit.Primary(Loc.T(confirm));
         primary.BackgroundColor = danger ? UiKit.Red : UiKit.Blue;
         primary.Clicked += async (_, _) =>
         {
+            closingFromButton = true;
+            await CloseModalAsync(page.Navigation);
             completion.TrySetResult(true);
-            await page.Navigation.PopModalAsync();
         };
         var buttons = new VerticalStackLayout { Spacing = 8, Children = { primary } };
         if (cancel is not null)
         {
-            var secondary = UiKit.Secondary(cancel);
+            var secondary = UiKit.Secondary(Loc.T(cancel));
             secondary.Clicked += async (_, _) =>
             {
+                closingFromButton = true;
+                await CloseModalAsync(page.Navigation);
                 completion.TrySetResult(false);
-                await page.Navigation.PopModalAsync();
             };
             buttons.Children.Add(secondary);
         }
@@ -160,9 +177,9 @@ public static class AppDialog
             Spacing = 14,
             Children =
             {
-                new Label { Text = title, FontSize = 22, FontAttributes = FontAttributes.Bold,
+                new Label { Text = Loc.T(title), FontSize = 22, FontAttributes = FontAttributes.Bold,
                     TextColor = Colors.White },
-                new Label { Text = message, FontSize = 14, TextColor = UiKit.Muted,
+                new Label { Text = Loc.T(message), FontSize = 14, TextColor = UiKit.Muted,
                     LineBreakMode = LineBreakMode.WordWrap },
                 buttons
             }
@@ -173,8 +190,27 @@ public static class AppDialog
             VerticalOptions = LayoutOptions.Center,
             Children = { card }
         };
-        page.Disappearing += (_, _) => completion.TrySetResult(false);
+        page.Disappearing += (_, _) =>
+        {
+            if (!closingFromButton)
+                completion.TrySetResult(false);
+        };
         await owner.Navigation.PushModalAsync(page);
         return await completion.Task;
+    }
+
+    static async Task CloseModalAsync(INavigation navigation)
+    {
+        try
+        {
+            if (navigation.ModalStack.Count > 0)
+                await navigation.PopModalAsync();
+        }
+        catch
+        {
+            // A root-page replacement can invalidate an old navigation stack.
+            // The completion source is already resolved, so this callback must
+            // not escape into Android as JavaProxyThrowable.
+        }
     }
 }

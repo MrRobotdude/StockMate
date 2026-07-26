@@ -23,8 +23,19 @@ public sealed class PositionDetailPage : ContentPage
         Content = new ScrollView { Content = _root };
         Appearing += async (_, _) =>
         {
-            await _decisions.RebuildAsync();
-            Render();
+            try
+            {
+                await _decisions.RebuildAsync();
+                Render();
+            }
+            catch (Exception ex)
+            {
+                await AppDialog.ShowAsync(this, Loc.T("Gagal", "Failed"),
+                    Loc.T(
+                        $"Detail posisi tidak dapat diperbarui: {ex.Message}",
+                        $"Position details could not be refreshed: {ex.Message}"),
+                    danger: true);
+            }
         };
     }
 
@@ -48,7 +59,7 @@ public sealed class PositionDetailPage : ContentPage
 
         _root.Children.Add(UiKit.ExpandableCard(
             Loc.T("Ringkasan posisi", "Position summary"),
-            $"{position.Lots} lot · Rp {position.MarketValue:N0}",
+            $"{Loc.Lots(position.Lots)} · Rp {position.MarketValue:N0}",
             new VerticalStackLayout
         {
             Spacing = 7,
@@ -77,16 +88,11 @@ public sealed class PositionDetailPage : ContentPage
         }
         else
         {
-            var actionColor = decision.Action.Contains("SELL") ||
-                              decision.Action.Contains("REDUCE")
+            var actionColor = Loc.IsSellAction(decision.ActionCode)
                 ? UiKit.Red
-                : decision.Action.Contains("ADD") ||
-                  decision.Action.Contains("AVERAGE")
+                : Loc.IsBuyAction(decision.ActionCode)
                     ? UiKit.Green : UiKit.Blue;
-            _root.Children.Add(UiKit.ExpandableCard(
-                decision.Action,
-                $"{Loc.T("Keyakinan", "Confidence")} {decision.Confidence}",
-                new VerticalStackLayout
+            var decisionDetails = new VerticalStackLayout
             {
                 Spacing = 8,
                 Children =
@@ -95,16 +101,45 @@ public sealed class PositionDetailPage : ContentPage
                     UiKit.Sub(decision.EventSummary),
                     MetricLine("Skor teknikal", $"{decision.TechnicalScore}/100"),
                     MetricLine("Penyesuaian isu", $"{decision.EventAdjustment:+#;-#;0}"),
-                    MetricLine("Skor gabungan", $"{decision.Score}/100"),
-                    MetricLine("Harga limit order", $"Rp {decision.EntryHigh:N0}"),
-                    MetricLine("Batal jika opening di atas", $"Rp {decision.MaxBuyPrice:N0}"),
-                    MetricLine("Jumlah tambah", decision.SuggestedLots > 0
-                        ? $"{decision.SuggestedLots} lot"
-                        : "0 lot — jangan eksekusi"),
-                    MetricLine("Stop loss", $"Rp {decision.StopLoss:N0}"),
-                    MetricLine("Target utama", $"Rp {decision.Target:N0}")
+                    MetricLine("Skor gabungan", $"{decision.Score}/100")
                 }
-            }, decision.Confidence, actionColor, initiallyExpanded: true));
+            };
+            if (Loc.IsBuyAction(decision.ActionCode))
+            {
+                decisionDetails.Children.Add(MetricLine(
+                    "Harga limit order", $"Rp {decision.EntryHigh:N0}"));
+                decisionDetails.Children.Add(MetricLine(
+                    "Batal jika opening di atas", $"Rp {decision.EntryHigh:N0}"));
+                decisionDetails.Children.Add(MetricLine(
+                    "Jumlah tambah", Loc.Lots(decision.SuggestedLots)));
+            }
+            else if (Loc.IsSellAction(decision.ActionCode))
+            {
+                decisionDetails.Children.Add(MetricLine(
+                    Loc.T("Harga order jual", "Sell order price"),
+                    $"Rp {decision.ExecutionPrice:N0}"));
+                decisionDetails.Children.Add(MetricLine(
+                    "Jumlah jual", Loc.Lots(decision.ActionLots)));
+            }
+            else
+            {
+                decisionDetails.Children.Add(MetricLine(
+                    Loc.T("Harga acuan", "Reference price"),
+                    $"Rp {decision.ReferencePrice:N0}"));
+            }
+            decisionDetails.Children.Add(MetricLine(
+                "Stop loss", $"Rp {decision.StopLoss:N0}"));
+            decisionDetails.Children.Add(MetricLine(
+                "Target utama", $"Rp {decision.Target:N0}"));
+            _root.Children.Add(UiKit.ExpandableCard(
+                Loc.Action(decision),
+                Loc.T(
+                    $"Keyakinan {Loc.Confidence(decision.Confidence)} · {decision.ConfidenceScore}/100",
+                    $"Confidence {Loc.Confidence(decision.Confidence)} · {decision.ConfidenceScore}/100"),
+                decisionDetails,
+                $"{decision.ConfidenceScore}/100",
+                actionColor,
+                initiallyExpanded: true));
 
             var riskStack = new VerticalStackLayout
             {
@@ -118,7 +153,9 @@ public sealed class PositionDetailPage : ContentPage
             if (decision.TrailingStopPercent > 0)
                 riskStack.Children.Add(new Label
                 {
-                    Text = $"Trailing stop yang disarankan: {decision.TrailingStopPercent:N1}%",
+                    Text = Loc.T(
+                        $"Trailing stop yang disarankan: {decision.TrailingStopPercent:N1}%",
+                        $"Recommended trailing stop: {decision.TrailingStopPercent:N1}%"),
                     TextColor = UiKit.Green,
                     FontAttributes = FontAttributes.Bold
                 });
@@ -137,8 +174,8 @@ public sealed class PositionDetailPage : ContentPage
                 UiKit.Sub(decision.Invalidation)));
         }
 
-        var buy = UiKit.Primary("Buy / Tambah posisi");
-        var sell = UiKit.Primary("Sell / Kurangi posisi");
+        var buy = UiKit.Primary(Loc.T("Buy / Tambah posisi"));
+        var sell = UiKit.Primary(Loc.T("Sell / Kurangi posisi"));
         sell.BackgroundColor = UiKit.Card;
         var risk = UiKit.Tertiary(Loc.T("Atur stop loss & take profit", "Set stop loss & take profit"));
         buy.Clicked += async (_, _) => await RecordAsync("BUY");
@@ -171,10 +208,14 @@ public sealed class PositionDetailPage : ContentPage
 
         var actionColor = scan.Verdict.Contains("BUY") ? UiKit.Green : UiKit.Blue;
         _root.Children.Add(UiKit.ExpandableCard(
-            scan.Verdict,
+            Loc.Verdict(scan.Verdict),
             scan.SuggestedLots > 0
-                ? $"Limit Rp {scan.EntryHigh:N0} · {scan.SuggestedLots} lot"
-                : $"Pantau harga Rp {scan.EntryHigh:N0}",
+                ? Loc.T(
+                    $"Limit Rp {scan.EntryHigh:N0} · {scan.SuggestedLots} lot",
+                    $"Limit Rp {scan.EntryHigh:N0} · {scan.SuggestedLots} lots")
+                : Loc.T(
+                    $"Pantau harga Rp {scan.EntryHigh:N0}",
+                    $"Watch price Rp {scan.EntryHigh:N0}"),
             new VerticalStackLayout
             {
                 Spacing = 8,
@@ -188,25 +229,45 @@ public sealed class PositionDetailPage : ContentPage
                     MetricLine("Target 1", $"Rp {scan.Target1:N0}"),
                     MetricLine("Target 2", $"Rp {scan.Target2:N0}"),
                     MetricLine("Risk/reward", $"{scan.RiskReward:N2}x"),
-                    UiKit.Caption($"{scan.DataSession} · data {scan.DataTime:dd MMM yyyy HH:mm}")
+                    MetricLine(Loc.T("Skor teknikal", "Technical score"),
+                        $"{scan.Score}/100"),
+                    MetricLine(Loc.T("Penyesuaian isu", "Event adjustment"),
+                        $"{scan.EventAdjustment:+#;-#;0}"),
+                    MetricLine(Loc.T("Skor gabungan", "Combined score"),
+                        $"{scan.CombinedScore}/100"),
+                    UiKit.Caption(Loc.T(
+                        $"{scan.DataSession} · data {scan.DataTime:dd MMM yyyy HH:mm}",
+                        $"{Loc.Session(scan.DataSession)} · data {scan.DataTime:dd MMM yyyy HH:mm}"))
                 }
-            }, scan.Verdict, actionColor, initiallyExpanded: true));
+            }, Loc.Verdict(scan.Verdict), actionColor,
+            initiallyExpanded: true));
         _root.Children.Add(UiKit.ExpandableCard(
             "Alasan keputusan",
             "Fakta yang mendukung setup",
-            UiKit.Sub(scan.Reasons)));
+            UiKit.Sub(Loc.English && !string.IsNullOrWhiteSpace(scan.ReasonsEn)
+                ? scan.ReasonsEn : scan.Reasons)));
         _root.Children.Add(UiKit.ExpandableCard(
             "Risiko & pembatalan",
-            $"Jangan beli di atas Rp {scan.MaxBuyPrice:N0}",
-            UiKit.Sub($"{scan.Risks}\n\nRekomendasi batal jika harga melewati batas beli atau menembus stop loss.")));
-        var eventView = App.Services.GetRequiredService<EventIntelligenceService>()
-            .Summarize(_symbol);
+            Loc.T(
+                $"Jangan beli di atas Rp {scan.EntryHigh:N0}",
+                $"Do not buy above Rp {scan.EntryHigh:N0}"),
+            UiKit.Sub(Loc.T(
+                $"{scan.Risks}\n\nRekomendasi batal jika harga melewati batas beli atau menembus stop loss.",
+                $"{(string.IsNullOrWhiteSpace(scan.RisksEn) ? scan.Risks : scan.RisksEn)}\n\nThe recommendation is invalid if price exceeds the buy limit or breaks the stop loss."))));
+        var eventView = _data.State.AutoEventIntelligence
+            ? App.Services.GetRequiredService<EventIntelligenceService>()
+                .Summarize(_symbol)
+            : (Adjustment: 0, Summary: Loc.T(
+                "Analisis isu dinonaktifkan.",
+                "Event analysis is disabled."));
         _root.Children.Add(UiKit.ExpandableCard(
             "Isu & peristiwa terbaru",
-            $"Penyesuaian skor {eventView.Adjustment:+#;-#;0}",
+            Loc.T(
+                $"Penyesuaian skor {eventView.Adjustment:+#;-#;0}",
+                $"Score adjustment {eventView.Adjustment:+#;-#;0}"),
             UiKit.Sub(eventView.Summary)));
 
-        var buy = UiKit.Primary("Catat BUY");
+        var buy = UiKit.Primary(Loc.T("Catat BUY"));
         buy.IsEnabled = scan.SuggestedLots > 0 && scan.Verdict.Contains("BUY");
         buy.Clicked += async (_, _) => await RecordAsync("BUY");
         _root.Children.Add(buy);
@@ -214,52 +275,85 @@ public sealed class PositionDetailPage : ContentPage
 
     async Task RecordAsync(string side)
     {
-        var lotsText = await AppDialog.PromptAsync(this,
-            $"{side} {_symbol}", "Jumlah lot yang benar-benar dieksekusi",
-            keyboard: Keyboard.Numeric);
-        if (string.IsNullOrWhiteSpace(lotsText)) return;
-        var priceText = await AppDialog.PromptAsync(this,
-            "Harga transaksi", "Harga per lembar", keyboard: Keyboard.Numeric);
-        if (string.IsNullOrWhiteSpace(priceText)) return;
-        var note = await AppDialog.PromptAsync(this, "Catatan", "Alasan transaksi (opsional)") ?? "";
-        if (!int.TryParse(lotsText, out var lots) ||
-            !decimal.TryParse(priceText, out var price))
+        try
         {
-            await AppDialog.ShowAsync(this, "Data tidak valid", "Lot dan harga harus berupa angka.");
-            return;
+            var lotsText = await AppDialog.PromptAsync(this,
+                $"{side} {_symbol}", "Jumlah lot yang benar-benar dieksekusi",
+                keyboard: Keyboard.Numeric);
+            if (string.IsNullOrWhiteSpace(lotsText)) return;
+            var priceText = await AppDialog.PromptAsync(this,
+                "Harga transaksi", "Harga per lembar",
+                keyboard: Keyboard.Numeric);
+            if (string.IsNullOrWhiteSpace(priceText)) return;
+            var note = await AppDialog.PromptAsync(
+                this, "Catatan", "Alasan transaksi (opsional)") ?? "";
+            if (!int.TryParse(lotsText, out var lots) ||
+                !decimal.TryParse(priceText, out var price))
+            {
+                await AppDialog.ShowAsync(
+                    this, "Data tidak valid",
+                    "Lot dan harga harus berupa angka.");
+                return;
+            }
+            var result = await _data.AddTransactionAsync(
+                _symbol, side, lots, price, note);
+            await AppDialog.ShowAsync(this,
+                result.Ok ? "Transaksi tersimpan" : "Tidak dapat disimpan",
+                result.Message, danger: !result.Ok);
+            if (result.Ok)
+            {
+                await _decisions.RebuildAsync();
+                Render();
+            }
         }
-        var result = await _data.AddTransactionAsync(_symbol, side, lots, price, note);
-        await AppDialog.ShowAsync(this,
-            result.Ok ? "Transaksi tersimpan" : "Tidak dapat disimpan",
-            result.Message, danger: !result.Ok);
-        if (result.Ok)
+        catch (Exception ex)
         {
-            await _decisions.RebuildAsync();
-            Render();
+            await AppDialog.ShowAsync(
+                this, Loc.T("Tidak dapat disimpan", "Could not save"),
+                Loc.T(
+                    $"Transaksi tidak dapat disimpan: {ex.Message}",
+                    $"The transaction could not be saved: {ex.Message}"),
+                danger: true);
         }
     }
 
     async Task SetRiskAsync(Position position)
     {
-        var stopText = await AppDialog.PromptAsync(this,
-            "Stop loss", "Isi 0 untuk menghapus",
-            position.StopLoss.ToString("0.##"), Keyboard.Numeric);
-        if (stopText is null) return;
-        var targetText = await AppDialog.PromptAsync(this,
-            "Take profit", "Isi 0 untuk menghapus",
-            position.TakeProfit.ToString("0.##"), Keyboard.Numeric);
-        if (targetText is null) return;
-        if (!decimal.TryParse(stopText, out var stop) ||
-            !decimal.TryParse(targetText, out var target))
+        try
         {
-            await AppDialog.ShowAsync(this, "Data tidak valid",
-                "Stop loss dan take profit harus berupa angka.");
-            return;
+            var stopText = await AppDialog.PromptAsync(this,
+                "Stop loss", "Isi 0 untuk menghapus",
+                position.StopLoss.ToString("0.##"), Keyboard.Numeric);
+            if (stopText is null) return;
+            var targetText = await AppDialog.PromptAsync(this,
+                "Take profit", "Isi 0 untuk menghapus",
+                position.TakeProfit.ToString("0.##"), Keyboard.Numeric);
+            if (targetText is null) return;
+            if (!decimal.TryParse(stopText, out var stop) ||
+                !decimal.TryParse(targetText, out var target) ||
+                stop < 0 || target < 0)
+            {
+                await AppDialog.ShowAsync(this, "Data tidak valid",
+                    Loc.T(
+                        "Stop loss dan take profit harus berupa angka 0 atau lebih.",
+                        "Stop loss and take profit must be numbers equal to or above 0."));
+                return;
+            }
+            position.StopLoss = stop;
+            position.TakeProfit = target;
+            await _data.SaveAsync();
+            await _decisions.RebuildAsync();
+            Render();
         }
-        position.StopLoss = stop;
-        position.TakeProfit = target;
-        await _data.SaveAsync();
-        Render();
+        catch (Exception ex)
+        {
+            await AppDialog.ShowAsync(
+                this, Loc.T("Tidak dapat disimpan", "Could not save"),
+                Loc.T(
+                    $"Rencana risiko tidak dapat disimpan: {ex.Message}",
+                    $"The risk plan could not be saved: {ex.Message}"),
+                danger: true);
+        }
     }
 
     static Grid MetricLine(string label, string value, Color? valueColor = null)

@@ -15,6 +15,7 @@ public sealed class SettingsPage : ContentPage
     readonly Switch _speculative=new(), _autoScan=new(), _autoEvents=new();
     readonly Picker _language = new() { Title = "Bahasa / Language", ItemsSource = new[] { "Bahasa Indonesia", "English" } };
     readonly Label _universeInfo=UiKit.Sub("");
+    bool _saving;
     public SettingsPage(AppDataService data, UniverseService universe)
     {
         _data=data; _universe=universe; Title=Loc.T("Pengaturan", "Settings"); BackgroundColor=UiKit.Navy;
@@ -57,7 +58,7 @@ public sealed class SettingsPage : ContentPage
                 Spacing = 10,
                 Children = { Field("Fee beli (%)", _buyFee), Field("Fee jual (%)", _sellFee) }
             }));
-        var row=new Grid{ColumnDefinitions=[new(GridLength.Star),new(GridLength.Auto)]}; row.Add(new VerticalStackLayout{Children={new Label{Text="Sertakan saham spekulatif",TextColor=Colors.White},UiKit.Sub("Maksimal alokasi scanner Rp500 ribu")}},0); row.Add(_speculative,1); root.Children.Add(UiKit.Box(row));
+        var row=new Grid{ColumnDefinitions=[new(GridLength.Star),new(GridLength.Auto)]}; row.Add(new VerticalStackLayout{Children={new Label{Text=Loc.T("Sertakan saham spekulatif"),TextColor=Colors.White},UiKit.Sub("Maksimal alokasi scanner Rp500 ribu")}},0); row.Add(_speculative,1); root.Children.Add(UiKit.Box(row));
         var autoRow = new Grid
         {
             ColumnDefinitions = [new(GridLength.Star), new(GridLength.Auto)]
@@ -66,8 +67,8 @@ public sealed class SettingsPage : ContentPage
         {
             Children =
             {
-                new Label { Text = "Scan closing otomatis", TextColor = Colors.White },
-                UiKit.Sub("Tarik 07.00 • cek 12.15 & 16.30 • retry bila closing belum siap")
+                new Label { Text = Loc.T("Scan closing otomatis"), TextColor = Colors.White },
+                UiKit.Sub("Tarik & analisis 07.00 • cek 12.15 & 16.30 • retry bila closing belum siap")
             }
         }, 0);
         autoRow.Add(_autoScan, 1);
@@ -79,8 +80,8 @@ public sealed class SettingsPage : ContentPage
         {
             Children =
             {
-                new Label { Text = "Analisis isu opening & closing", TextColor = Colors.White },
-                UiKit.Sub("Gratis • sekitar 08.45 & setelah closing • portofolio + kandidat teratas")
+                new Label { Text = Loc.T("Analisis isu opening & closing"), TextColor = Colors.White },
+                UiKit.Sub("Gratis • sebelum analisis & sekitar 08.45 • portofolio + kandidat teratas")
             }
         }, 0);
         eventRow.Add(_autoEvents, 1);
@@ -166,7 +167,9 @@ public sealed class SettingsPage : ContentPage
             Spacing = 4,
             Children =
             {
-                UiKit.Sub($"Versi {AppInfo.Current.VersionString} • build {AppInfo.Current.BuildString}"),
+                UiKit.Sub(Loc.T(
+                    $"Versi {AppInfo.Current.VersionString} • build {AppInfo.Current.BuildString}",
+                    $"Version {AppInfo.Current.VersionString} • build {AppInfo.Current.BuildString}")),
                 UiKit.Sub($"Package: {AppInfo.Current.PackageName}"),
                 UiKit.Sub("Nomor versi berasal langsung dari APK yang sedang terpasang.")
             }
@@ -228,81 +231,209 @@ public sealed class SettingsPage : ContentPage
         _autoEvents.IsToggled = _data.State.AutoEventIntelligence;
         _language.SelectedIndex = _data.State.LanguageCode == "en" ? 1 : 0;
         _delay.Text=_data.State.RequestDelayMilliseconds.ToString();
-        _universeInfo.Text=$"Universe aktif: {_universe.Symbols.Count} saham • sumber: {(_data.State.UniverseSource.Length==0?"fallback lokal":_data.State.UniverseSource)} • diperbarui {(_data.State.UniverseUpdatedAt?.ToString("dd MMM yyyy")??"belum pernah")}.";
+        var source = _data.State.UniverseSource.Length == 0
+            ? Loc.T("fallback lokal") : _data.State.UniverseSource;
+        var updated = _data.State.UniverseUpdatedAt?.ToString("dd MMM yyyy") ??
+                      Loc.T("belum pernah");
+        _universeInfo.Text = Loc.T(
+            $"Universe aktif: {_universe.Symbols.Count} saham • sumber: {source} • diperbarui {updated}.",
+            $"Active universe: {_universe.Symbols.Count} stocks • source: {source} • updated {updated}.");
     }
 
     async Task UpdateUniverseAsync()
     {
         try
         {
-            _universeInfo.Text = "Mengambil master emiten dari IDX…";
+            _universeInfo.Text = Loc.T("Mengambil master emiten dari IDX…");
             var result = await _universe.EnsureCurrentAsync(true, CancellationToken.None);
             Load();
             await AppDialog.ShowAsync(this,
                 result.Updated ? "Master diperbarui" : "Menggunakan cache",
-                $"{result.Message}\nUniverse aktif: {result.Count} saham.");
+                Loc.T(
+                    $"{result.Message}\nUniverse aktif: {result.Count} saham.",
+                    $"{result.Message}\nActive universe: {result.Count} stocks."));
         }
-        catch(Exception ex) { await AppDialog.ShowAsync(this, "Gagal", ex.Message, danger:true); Load(); }
+        catch(Exception ex)
+        {
+            await AppDialog.ShowAsync(this, Loc.T("Gagal", "Failed"),
+                ex.Message, danger:true);
+            Load();
+        }
     }
     async Task SaveAsync()
     {
-        await UiKit.RunBusyAsync(this, Loc.T("Menyimpan pengaturan…", "Saving settings…"), async () =>
-        {
-        decimal? desiredCash=decimal.TryParse(_cash.Text,out var cash)?cash:null;
-        if(decimal.TryParse(_risk.Text,out var risk))_data.State.RiskPerTrade=risk;
-        if(decimal.TryParse(_monthly.Text,out var monthly))_data.State.MonthlyLimit=monthly;
-        if(decimal.TryParse(_buyFee.Text,out var buy))_data.State.BuyFeeRate=buy/100;
-        if(decimal.TryParse(_sellFee.Text,out var sell))_data.State.SellFeeRate=sell/100;
-        if(decimal.TryParse(_officialRealized.Text,out var officialRealized))
-        {
-            _data.State.OfficialRealizedProfit=officialRealized;
-            _data.State.RealizedReconciledAt=DateTime.Now;
-        }
-        foreach(var tx in _data.State.Transactions.Where(x =>
-                    x.IsActive && x.Source=="HISTORY" &&
-                    x.Note.Contains("e-Statement Stockbit",StringComparison.OrdinalIgnoreCase)))
-            tx.Fee=decimal.Round(tx.GrossValue*(tx.Side=="BUY"
-                ?_data.State.BuyFeeRate:_data.State.SellFeeRate),0);
-        _data.RebuildPositions();
-        if(desiredCash.HasValue)
-        {
-            var flows=_data.State.Transactions.Where(x=>x.IsActive&&x.AffectsCash).Sum(x=>x.NetCashFlow);
-            _data.State.CashOpeningBalance=desiredCash.Value-flows;
-            _data.State.CashReconciled=true;
-            _data.State.CashReconciledAt=DateTime.Now;
-        }
-        _data.RecalculateCash();
-        _data.State.IncludeSpeculative=_speculative.IsToggled;
-        _data.State.AutoScanAfterClose = _autoScan.IsToggled;
-        _data.State.AutoEventIntelligence = _autoEvents.IsToggled;
-        if (_data.State.AutoScanAfterClose)
-            BackgroundScanScheduler.ScheduleDaily(Android.App.Application.Context);
-        else
-            BackgroundScanScheduler.CancelDaily(Android.App.Application.Context);
+        if (_saving) return;
+        _saving = true;
         var oldLanguage = _data.State.LanguageCode;
-        _data.State.LanguageCode = _language.SelectedIndex == 1 ? "en" : "id";
-        if(int.TryParse(_delay.Text,out var delay))_data.State.RequestDelayMilliseconds=Math.Clamp(delay,0,5000);
-        await _data.SaveAsync(); await AppDialog.ShowAsync(this, Loc.T("Tersimpan","Saved"),Loc.T("Pengaturan berhasil disimpan.","Settings saved."));
-        if (oldLanguage != _data.State.LanguageCode && Window is not null)
+        var newLanguage = _language.SelectedIndex == 1 ? "en" : "id";
+        string? scheduleWarning = null;
+        try
         {
-            Loc.Use(_data.State.LanguageCode);
-            Window.Page = new AppShell();
+            if (ScanServiceBridge.IsRunning)
+            {
+                await AppDialog.ShowAsync(this,
+                    Loc.T("Scanner masih berjalan", "Scanner is still running"),
+                    Loc.T(
+                        "Tunggu proses selesai atau hentikan scanner sebelum menyimpan pengaturan agar snapshot dan state tidak ditulis bersamaan.",
+                        "Wait for completion or stop the scanner before saving settings so the snapshot and app state are not written concurrently."));
+                return;
+            }
+            if (!decimal.TryParse(_cash.Text, out var desiredCash) ||
+                desiredCash < 0 ||
+                !decimal.TryParse(_risk.Text, out var risk) ||
+                risk <= 0 ||
+                !decimal.TryParse(_monthly.Text, out var monthly) ||
+                monthly <= 0 ||
+                !decimal.TryParse(_buyFee.Text, out var buyFeePercent) ||
+                buyFeePercent is < 0 or > 5 ||
+                !decimal.TryParse(_sellFee.Text, out var sellFeePercent) ||
+                sellFeePercent is < 0 or > 5 ||
+                !int.TryParse(_delay.Text, out var requestDelay) ||
+                requestDelay is < 0 or > 5000)
+            {
+                await AppDialog.ShowAsync(this,
+                    Loc.T("Data tidak valid", "Invalid data"),
+                    Loc.T(
+                        "Kas harus 0 atau lebih, batas risiko harus di atas 0, fee harus 0–5%, dan jeda request harus 0–5000 milidetik.",
+                        "Cash must be 0 or more, risk limits must be above 0, fees must be 0–5%, and the request delay must be 0–5000 milliseconds."),
+                    danger: true);
+                return;
+            }
+            decimal? officialRealized = null;
+            if (!string.IsNullOrWhiteSpace(_officialRealized.Text))
+            {
+                if (!decimal.TryParse(
+                        _officialRealized.Text, out var parsedRealized))
+                {
+                    await AppDialog.ShowAsync(this,
+                        Loc.T("Data tidak valid", "Invalid data"),
+                        Loc.T(
+                            "Realized P/L resmi harus berupa angka atau dikosongkan.",
+                            "Official realized P/L must be numeric or left blank."),
+                        danger: true);
+                    return;
+                }
+                officialRealized = parsedRealized;
+            }
+
+            await UiKit.RunBusyAsync(this,
+                Loc.T("Menyimpan pengaturan…", "Saving settings…"), async () =>
+                {
+                    _data.State.RiskPerTrade = risk;
+                    _data.State.MonthlyLimit = monthly;
+                    _data.State.BuyFeeRate = buyFeePercent / 100;
+                    _data.State.SellFeeRate = sellFeePercent / 100;
+                    if (officialRealized.HasValue)
+                    {
+                        _data.State.OfficialRealizedProfit =
+                            officialRealized.Value;
+                        _data.State.RealizedReconciledAt = DateTime.Now;
+                    }
+                    foreach (var tx in _data.State.Transactions.Where(x =>
+                                 x.IsActive && x.Source == "HISTORY" &&
+                                 x.Note.Contains("e-Statement Stockbit",
+                                     StringComparison.OrdinalIgnoreCase)))
+                        tx.Fee = decimal.Round(tx.GrossValue *
+                            (tx.Side == "BUY"
+                                ? _data.State.BuyFeeRate
+                                : _data.State.SellFeeRate), 0);
+                    _data.RebuildPositions();
+                    var flows = _data.State.Transactions
+                        .Where(x => x.IsActive && x.AffectsCash)
+                        .Sum(x => x.NetCashFlow);
+                    _data.State.CashOpeningBalance =
+                        desiredCash - flows;
+                    _data.State.CashReconciled = true;
+                    _data.State.CashReconciledAt = DateTime.Now;
+                    _data.RecalculateCash();
+                    _data.State.IncludeSpeculative = _speculative.IsToggled;
+                    _data.State.AutoScanAfterClose = _autoScan.IsToggled;
+                    _data.State.AutoEventIntelligence = _autoEvents.IsToggled;
+                    _data.State.LanguageCode = newLanguage;
+                    _data.State.RequestDelayMilliseconds =
+                        requestDelay;
+
+                    try
+                    {
+                        if (_data.State.AutoScanAfterClose)
+                            BackgroundScanScheduler.ScheduleDaily(
+                                Android.App.Application.Context);
+                        else
+                            BackgroundScanScheduler.CancelDaily(
+                                Android.App.Application.Context);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Saving user settings must not be blocked by an Android
+                        // alarm permission or vendor-specific scheduler failure.
+                        scheduleWarning = ex.Message;
+                    }
+                    await _data.SaveAsync();
+                });
+
+            // Persist the cold-start notification language only after the app
+            // state itself has been saved successfully.
+            Preferences.Default.Set("app.language", newLanguage);
+            Loc.Use(newLanguage);
+            var savedMessage = Loc.T(
+                "Pengaturan berhasil disimpan.",
+                "Settings saved.");
+            if (!string.IsNullOrWhiteSpace(scheduleWarning))
+                savedMessage += "\n\n" + Loc.T(
+                    $"Jadwal background belum dapat diperbarui: {scheduleWarning}",
+                    $"The background schedule could not be updated: {scheduleWarning}");
+            await AppDialog.ShowAsync(this, Loc.T("Tersimpan", "Saved"),
+                savedMessage);
+
+            if (oldLanguage != newLanguage)
+            {
+                var window = Window;
+                if (window is not null)
+                    await MainThread.InvokeOnMainThreadAsync(() =>
+                        window.Page = new AppShell());
+            }
         }
-        });
+        catch (Exception ex)
+        {
+            await AppDialog.ShowAsync(this, Loc.T("Gagal", "Failed"),
+                Loc.T(
+                    $"Pengaturan tidak dapat disimpan: {ex.Message}",
+                    $"Settings could not be saved: {ex.Message}"),
+                danger: true);
+        }
+        finally
+        {
+            _saving = false;
+        }
     }
 
     async Task ImportUniverseAsync()
     {
         try
         {
-            var file=await FilePicker.Default.PickAsync(new PickOptions{PickerTitle="Pilih daftar kode saham IDX"});
+            var file=await FilePicker.Default.PickAsync(new PickOptions
+            {
+                PickerTitle=Loc.T("Pilih daftar kode saham IDX")
+            });
             if(file is null)return;
             await using var stream=await file.OpenReadAsync();
             var count=await _universe.ImportAsync(stream);
-            _universeInfo.Text=$"Universe aktif: {count} saham.";
-            await AppDialog.ShowAsync(this, "Universe diperbarui",$"{count} kode saham tersimpan. Format boleh satu kode per baris atau CSV.");
+            _universeInfo.Text = Loc.T(
+                $"Universe aktif: {count} saham.",
+                $"Active universe: {count} stocks.");
+            await AppDialog.ShowAsync(this, "Universe diperbarui",
+                Loc.T(
+                    $"{count} kode saham tersimpan. Format boleh satu kode per baris atau CSV.",
+                    $"{count} stock symbols were saved. Use one symbol per line or CSV."));
         }
-        catch(Exception ex){await AppDialog.ShowAsync(this, "Gagal",$"Universe tidak dapat dibaca: {ex.Message}",danger:true);}
+        catch(Exception ex)
+        {
+            await AppDialog.ShowAsync(this, Loc.T("Gagal", "Failed"),
+                Loc.T(
+                    $"Universe tidak dapat dibaca: {ex.Message}",
+                    $"The universe could not be read: {ex.Message}"),
+                danger:true);
+        }
     }
 
     async Task ExportUniverseAsync()
@@ -313,28 +444,49 @@ public sealed class SettingsPage : ContentPage
             await _universe.ExportAsync(path);
             await Share.Default.RequestAsync(new ShareFileRequest("Universe IDX StockMate",new ShareFile(path)));
         }
-        catch(Exception ex){await AppDialog.ShowAsync(this, "Gagal",$"Universe tidak dapat dibagikan: {ex.Message}",danger:true);}
+        catch(Exception ex)
+        {
+            await AppDialog.ShowAsync(this, Loc.T("Gagal", "Failed"),
+                Loc.T(
+                    $"Universe tidak dapat dibagikan: {ex.Message}",
+                    $"The universe could not be shared: {ex.Message}"),
+                danger:true);
+        }
     }
 
     string StrategyText()
     {
         var strategy = _data.State.Strategy;
         var trained = strategy.Training is null
-            ? "Strategi manual/bawaan"
-            : $"Walk-forward OOS: {strategy.Training.OutOfSampleFolds} fold • " +
-              $"{strategy.Training.OutOfSampleTrades} trade • win rate " +
-              $"{strategy.Training.OutOfSampleWinRate:P1} • max DD " +
-              $"{strategy.Training.OutOfSampleMaxDrawdown:P1}";
-        return $"Strategi aktif: v{strategy.Version}\nRR minimum {strategy.MinimumRiskReward:N1} • " +
-               $"BUY ≥ {strategy.BuyScore} • WATCH ≥ {strategy.WatchScore}\n{trained}\n" +
-               "File strategi bisa diimpor tanpa publish ulang APK.";
+            ? Loc.T(
+                "Fallback rule-based aktif. Model v2.1.1 belum dipakai karena belum menghasilkan bundle READY_FOR_FORWARD_TEST.",
+                "The rule-based fallback is active. Model v2.1.1 is not in use because it has not produced a READY_FOR_FORWARD_TEST bundle.")
+            : Loc.T(
+                $"Walk-forward OOS: {strategy.Training.OutOfSampleFolds} fold • " +
+                $"{strategy.Training.OutOfSampleTrades} trade • win rate " +
+                $"{strategy.Training.OutOfSampleWinRate:P1} • max DD " +
+                $"{strategy.Training.OutOfSampleMaxDrawdown:P1}",
+                $"Walk-forward OOS: {strategy.Training.OutOfSampleFolds} folds • " +
+                $"{strategy.Training.OutOfSampleTrades} trades • win rate " +
+                $"{strategy.Training.OutOfSampleWinRate:P1} • max DD " +
+                $"{strategy.Training.OutOfSampleMaxDrawdown:P1}");
+        return Loc.T(
+            $"Strategi aktif: v{strategy.Version}\nRR minimum {strategy.MinimumRiskReward:N1} • " +
+            $"BUY ≥ {strategy.BuyScore} • WATCH ≥ {strategy.WatchScore}\n{trained}\n" +
+            "File strategi bisa diimpor tanpa publish ulang APK.",
+            $"Active strategy: v{strategy.Version}\nMinimum RR {strategy.MinimumRiskReward:N1} • " +
+            $"BUY ≥ {strategy.BuyScore} • WATCH ≥ {strategy.WatchScore}\n{trained}\n" +
+            "A strategy file can be imported without republishing the APK.");
     }
 
     async Task ImportStrategyAsync()
     {
         try
         {
-            var file=await FilePicker.Default.PickAsync(new PickOptions{PickerTitle="Pilih strategy.json"});
+            var file=await FilePicker.Default.PickAsync(new PickOptions
+            {
+                PickerTitle=Loc.T("Pilih strategy.json")
+            });
             if(file is null)return;
             await using var stream=await file.OpenReadAsync();
             var strategy=await JsonSerializer.DeserializeAsync<StrategyConfig>(stream);
@@ -354,9 +506,20 @@ public sealed class SettingsPage : ContentPage
                 return;
             }
             _data.State.Strategy=strategy; _data.State.StrategyVersion=strategy.Version; _data.State.MinRiskReward=strategy.MinimumRiskReward;
-            await _data.SaveAsync(); await AppDialog.ShowAsync(this, "Berhasil",$"Strategi v{strategy.Version} aktif.");
+            await _data.SaveAsync();
+            await AppDialog.ShowAsync(this, Loc.T("Berhasil", "Success"),
+                Loc.T(
+                    $"Strategi v{strategy.Version} aktif.",
+                    $"Strategy v{strategy.Version} is active."));
         }
-        catch(Exception ex){await AppDialog.ShowAsync(this, "Gagal",$"File tidak dapat dibaca: {ex.Message}",danger:true);}
+        catch(Exception ex)
+        {
+            await AppDialog.ShowAsync(this, Loc.T("Gagal", "Failed"),
+                Loc.T(
+                    $"File tidak dapat dibaca: {ex.Message}",
+                    $"The file could not be read: {ex.Message}"),
+                danger:true);
+        }
     }
 
     async Task ExportStrategyAsync()
@@ -367,6 +530,13 @@ public sealed class SettingsPage : ContentPage
             await File.WriteAllTextAsync(path,JsonSerializer.Serialize(_data.State.Strategy,new JsonSerializerOptions{WriteIndented=true}));
             await Share.Default.RequestAsync(new ShareFileRequest("Strategi StockMate",new ShareFile(path)));
         }
-        catch(Exception ex){await AppDialog.ShowAsync(this, "Gagal",$"Strategi tidak dapat dibagikan: {ex.Message}",danger:true);}
+        catch(Exception ex)
+        {
+            await AppDialog.ShowAsync(this, Loc.T("Gagal", "Failed"),
+                Loc.T(
+                    $"Strategi tidak dapat dibagikan: {ex.Message}",
+                    $"The strategy could not be shared: {ex.Message}"),
+                danger:true);
+        }
     }
 }

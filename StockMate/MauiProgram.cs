@@ -22,6 +22,7 @@ public static class MauiProgram
         builder.Services.AddSingleton<TransactionHistoryService>();
         builder.Services.AddSingleton<PortfolioDecisionService>();
         builder.Services.AddSingleton<EventIntelligenceService>();
+        builder.Services.AddSingleton<EvaluationExportService>();
 #if DEBUG
         builder.Logging.AddDebug();
 #endif

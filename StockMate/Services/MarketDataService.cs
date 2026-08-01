@@ -14,10 +14,16 @@ public sealed class MarketDataService
     {
         var interval = intraday ? "15m" : "1d";
         var range = intraday ? "5d" : "6mo";
+        var yahooSymbol = symbol.StartsWith('^') ||
+                          symbol.Contains('=') ||
+                          symbol.EndsWith(".JK", StringComparison.OrdinalIgnoreCase)
+            ? symbol
+            : symbol + ".JK";
+        var encodedSymbol = Uri.EscapeDataString(yahooSymbol);
         HttpResponseMessage? response = null;
         foreach (var host in new[] { "query1.finance.yahoo.com", "query2.finance.yahoo.com" })
         {
-            var url = $"https://{host}/v8/finance/chart/{symbol}.JK?interval={interval}&range={range}&events=div%2Csplits";
+            var url = $"https://{host}/v8/finance/chart/{encodedSymbol}?interval={interval}&range={range}&events=div%2Csplits";
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.UserAgent.ParseAdd(
                 "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36");

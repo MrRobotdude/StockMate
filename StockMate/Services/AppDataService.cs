@@ -48,6 +48,11 @@ public sealed class AppDataService
         await SaveCoreAsync(notify: true).ConfigureAwait(false);
     }
 
+    // Scanner checkpoints are recovery data, not a new UI state. Persisting them
+    // without raising Changed prevents a visible page from rebuilding hundreds of
+    // controls while a market download is still in progress.
+    public Task SaveCheckpointAsync() => SaveCoreAsync(notify: false);
+
     async Task SaveCoreAsync(bool notify)
     {
         await _ioGate.WaitAsync().ConfigureAwait(false);
@@ -76,7 +81,13 @@ public sealed class AppDataService
         State.MarketSnapshots.Clear();
         State.PortfolioDecisions.Clear();
         foreach (var position in State.Positions)
-            position.LastPrice = position.AveragePrice;
+        {
+            // Clearing scanner data must also clear quote provenance. Showing
+            // average cost as a market quote makes Dashboard/Portfolio look
+            // current even though every downloaded snapshot was removed.
+            position.LastPrice = 0;
+            position.MarketPriceAt = null;
+        }
         await SaveAsync();
     }
 
@@ -118,6 +129,26 @@ public sealed class AppDataService
             snapshot.Errors ??= [];
             snapshot.Symbols ??= [];
             if (snapshot.CompletedCount == 0) snapshot.CompletedCount = snapshot.Symbols.Count;
+        }
+        foreach (var run in State.ScanHistory)
+        {
+            run.Predictions ??= [];
+            foreach (var prediction in run.Predictions)
+            {
+                prediction.Id = prediction.Id == Guid.Empty
+                    ? Guid.NewGuid()
+                    : prediction.Id;
+                prediction.SessionKey ??= run.SessionKey ?? "";
+                prediction.Reasons ??= "";
+                prediction.ReasonsEn ??= "";
+                prediction.Risks ??= "";
+                prediction.RisksEn ??= "";
+                prediction.EventSummary ??= "";
+                prediction.EventSummaryEn ??= "";
+                prediction.NextDayStatus ??= "WAITING";
+                prediction.NextDayNoteCode ??= "";
+                prediction.Outcome ??= "PENDING";
+            }
         }
         foreach (var batch in State.TransactionImports)
             batch.ReconciliationDetails ??= [];
@@ -194,6 +225,122 @@ public sealed class AppDataService
             State.MarketSnapshots.Clear();
             State.PortfolioDecisions.Clear();
             State.DataSchemaVersion = 1800;
+        }
+        if (State.DataSchemaVersion < 1810)
+        {
+            // v0.7.3 separates the next-trading-day observation from the final
+            // swing result. Re-evaluate retained predictions with the exact GFD
+            // opening rule so a downloaded T+1 candle no longer appears as
+            // "waiting" until a target or stop is reached.
+            var latestRun = State.ScanHistory
+                .OrderByDescending(x => x.RunTime)
+                .FirstOrDefault();
+            foreach (var run in State.ScanHistory)
+            {
+                var snapshot = State.MarketSnapshots
+                    .Where(x => x.SessionKey == run.SessionKey)
+                    .OrderByDescending(x => x.CapturedAt)
+                    .FirstOrDefault();
+                foreach (var prediction in run.Predictions)
+                {
+                    prediction.EvaluationVersion = 0;
+                    prediction.SessionKey = string.IsNullOrWhiteSpace(
+                        prediction.SessionKey)
+                        ? run.SessionKey
+                        : prediction.SessionKey;
+                    var signalDate = prediction.SignalDate == default
+                        ? prediction.PredictedAt.Date
+                        : prediction.SignalDate.Date;
+                    prediction.SignalDate = signalDate;
+                    var symbolData = snapshot?.Symbols.FirstOrDefault(x =>
+                        x.Symbol.Equals(
+                            prediction.Symbol,
+                            StringComparison.OrdinalIgnoreCase));
+                    var signalCandle = symbolData?.Candles
+                        .Where(x => x.Close > 0 &&
+                                    x.Time.Date <= signalDate)
+                        .GroupBy(x => x.Time.Date)
+                        .OrderBy(x => x.Key)
+                        .Select(group =>
+                        {
+                            var ordered = group
+                                .OrderBy(x => x.Time)
+                                .ToList();
+                            return new Candle
+                            {
+                                Time = group.Key,
+                                Open = ordered[0].Open,
+                                High = ordered.Max(x => x.High),
+                                Low = ordered.Min(x => x.Low),
+                                Close = ordered[^1].Close,
+                                Volume = ordered.Sum(x => x.Volume)
+                            };
+                        })
+                        .LastOrDefault();
+                    if (signalCandle is not null &&
+                        prediction.SignalClose <= 0)
+                    {
+                        prediction.SignalOpen = signalCandle.Open;
+                        prediction.SignalHigh = signalCandle.High;
+                        prediction.SignalLow = signalCandle.Low;
+                        prediction.SignalClose = signalCandle.Close;
+                    }
+                    if (latestRun?.Id != run.Id) continue;
+                    var scan = State.LastScan.FirstOrDefault(x =>
+                        x.Symbol.Equals(
+                            prediction.Symbol,
+                            StringComparison.OrdinalIgnoreCase));
+                    if (scan is null) continue;
+                    prediction.TechnicalScore = scan.Score;
+                    prediction.EventAdjustment = scan.EventAdjustment;
+                    prediction.Score = scan.CombinedScore;
+                    prediction.SuggestedLots = scan.SuggestedLots;
+                    prediction.RiskReward = scan.RiskReward;
+                    prediction.Reasons = scan.Reasons;
+                    prediction.ReasonsEn = scan.ReasonsEn;
+                    prediction.Risks = scan.Risks;
+                    prediction.RisksEn = scan.RisksEn;
+                    prediction.EventSummary = scan.EventSummary;
+                    prediction.EventSummaryEn = scan.EventSummaryEn;
+                }
+            }
+            State.DataSchemaVersion = 1810;
+        }
+        if (State.DataSchemaVersion < 1900)
+        {
+            foreach (var batch in State.TransactionImports)
+                if (string.IsNullOrWhiteSpace(batch.Provider) &&
+                    batch.FileName.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
+                    batch.Provider = "STOCKBIT";
+            foreach (var tx in State.Transactions.Where(x =>
+                         string.IsNullOrWhiteSpace(x.BrokerAccountKey) &&
+                         x.Source == "HISTORY" &&
+                         x.Note.Contains("e-Statement Stockbit",
+                             StringComparison.OrdinalIgnoreCase)))
+                tx.BrokerAccountKey = "STOCKBIT";
+            State.DataSchemaVersion = 1900;
+        }
+        if (State.DataSchemaVersion < 2000)
+        {
+            // Every snapshot contains the same rolling candle history for
+            // hundreds of stocks. Keeping six copies made startup and each
+            // checkpoint serialize a large amount of duplicate JSON. Retain
+            // at most the newest complete snapshot plus a newer partial one;
+            // evaluation records themselves live in ScanHistory.
+            var newestComplete = State.MarketSnapshots
+                .Where(x => x.IsComplete)
+                .OrderByDescending(x => x.CapturedAt)
+                .FirstOrDefault();
+            var newestAny = State.MarketSnapshots
+                .OrderByDescending(x => x.CapturedAt)
+                .FirstOrDefault();
+            State.MarketSnapshots = new[] { newestAny, newestComplete }
+                .Where(x => x is not null)
+                .Select(x => x!)
+                .DistinctBy(x => x.SessionKey)
+                .OrderBy(x => x.CapturedAt)
+                .ToList();
+            State.DataSchemaVersion = 2000;
         }
         // Positions are derived only from imported or explicitly entered
         // transactions. Never manufacture opening transactions from UI data.
@@ -302,7 +449,13 @@ public sealed class AppDataService
                 Symbol = symbol,
                 Lots = shares / 100,
                 AveragePrice = carryingCost / shares,
-                LastPrice = old?.LastPrice ?? carryingCost / shares,
+                // Do not present cost basis as if it were a live market price.
+                // A newly imported holding stays unpriced until a snapshot is
+                // available; existing holdings retain their timestamped quote.
+                LastPrice = old?.MarketPriceAt is not null
+                    ? old.LastPrice
+                    : 0,
+                MarketPriceAt = old?.MarketPriceAt,
                 StopLoss = old?.StopLoss ?? 0,
                 TakeProfit = old?.TakeProfit ?? 0
             });
@@ -456,32 +609,51 @@ public sealed class AppDataService
     public void ApplyMarketPrices(IEnumerable<ScanResult> results)
     {
         var prices = results.GroupBy(x => x.Symbol)
-            .ToDictionary(x => x.Key, x => x.OrderByDescending(y => y.DataTime).First().LastPrice);
+            .ToDictionary(x => x.Key,
+                x => x.OrderByDescending(y => y.DataTime).First());
         foreach (var position in State.Positions)
-            if (prices.TryGetValue(position.Symbol, out var price))
-                position.LastPrice = price;
+            if (prices.TryGetValue(position.Symbol, out var result))
+            {
+                position.LastPrice = result.LastPrice;
+                position.MarketPriceAt = result.DataTime;
+            }
     }
 
-    public void ApplyMarketPrices(MarketSnapshot snapshot)
+    public bool ApplyMarketPrices(MarketSnapshot snapshot)
     {
+        var changed = false;
         var prices = snapshot.Symbols
             .Where(x => x.Candles.Count > 0)
-            .ToDictionary(x => x.Symbol, x => x.Candles[^1].Close,
+            .ToDictionary(x => x.Symbol, x => x.Candles[^1],
                 StringComparer.OrdinalIgnoreCase);
         foreach (var position in State.Positions)
-            if (prices.TryGetValue(position.Symbol, out var price) && price > 0)
-                position.LastPrice = price;
+            if (prices.TryGetValue(position.Symbol, out var candle) &&
+                candle.Close > 0)
+            {
+                if (position.LastPrice != candle.Close ||
+                    position.MarketPriceAt != candle.Time)
+                    changed = true;
+                position.LastPrice = candle.Close;
+                position.MarketPriceAt = candle.Time;
+            }
+        return changed;
     }
 
-    public bool ApplyMarketPrice(string symbol, decimal price)
+    public bool ApplyMarketPrice(
+        string symbol, decimal price, DateTime? observedAt = null,
+        bool notify = false)
     {
         if (price <= 0) return false;
         var position = State.Positions.FirstOrDefault(x =>
             x.Symbol.Equals(symbol, StringComparison.OrdinalIgnoreCase));
         if (position is null) return false;
         position.LastPrice = price;
-        Interlocked.Increment(ref _revision);
-        NotifyChanged();
+        position.MarketPriceAt = observedAt;
+        if (notify)
+        {
+            Interlocked.Increment(ref _revision);
+            NotifyChanged();
+        }
         return true;
     }
 

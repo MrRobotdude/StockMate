@@ -9,6 +9,7 @@ public sealed class PortfolioPage : ContentPage
     readonly AppDataService _data;
     readonly PortfolioDecisionService _decisions;
     readonly VerticalStackLayout _list = new() { Spacing = 10 };
+    readonly Label _freshness = UiKit.Sub("");
     readonly SearchBar _search = new() { Placeholder = Loc.T("Cari posisi / Search position…") };
     readonly Picker _filter = new() { Title = Loc.T("Semua tindakan") };
     readonly Picker _sort = new() { Title = Loc.T("Urutkan") };
@@ -18,6 +19,8 @@ public sealed class PortfolioPage : ContentPage
     const int PageSize = 8;
     int _page = 1;
     bool _isPreparing;
+    bool _subscribed;
+    CancellationTokenSource? _searchDebounce;
 
     public PortfolioPage(AppDataService data, PortfolioDecisionService decisions)
     {
@@ -50,7 +53,7 @@ public sealed class PortfolioPage : ContentPage
             Loc.T("Kode A–Z", "Symbol A–Z")
         };
         _sort.SelectedIndex = 0;
-        _search.TextChanged += (_, _) => { _page = 1; Render(); };
+        _search.TextChanged += (_, _) => DebounceSearch();
         _filter.SelectedIndexChanged += (_, _) => { _page = 1; Render(); };
         _sort.SelectedIndexChanged += (_, _) => { _page = 1; Render(); };
         _previous.Clicked += (_, _) => { if (_page > 1) { _page--; Render(); } };
@@ -74,6 +77,7 @@ public sealed class PortfolioPage : ContentPage
             "Lot dan average dihitung dari transaksi. Nilai pasar memakai harga snapshot terakhir. Gunakan filter tindakan untuk fokus pada posisi yang perlu keputusan.",
             "Lots and average cost come from transactions. Market value uses the latest snapshot. Use action filters to focus on positions that need a decision."));
         root.Children.Add(actions);
+        root.Children.Add(UiKit.Box(_freshness));
         var filterGrid = new Grid
         {
             ColumnDefinitions = [new(GridLength.Star), new(GridLength.Star)],
@@ -90,12 +94,19 @@ public sealed class PortfolioPage : ContentPage
         root.Children.Add(UiKit.Pager(_previous, _pageInfo, _next));
         Content = new ScrollView { Content = root };
         Appearing += OnAppearing;
+        Disappearing += OnDisappearing;
     }
 
     async void OnAppearing(object? sender, EventArgs e)
     {
         if (_isPreparing)
             return;
+
+        if (!_subscribed)
+        {
+            _data.Changed += OnDataChanged;
+            _subscribed = true;
+        }
 
         _isPreparing = true;
         try
@@ -119,8 +130,51 @@ public sealed class PortfolioPage : ContentPage
         }
     }
 
+    void OnDisappearing(object? sender, EventArgs e)
+    {
+        if (_subscribed)
+        {
+            _data.Changed -= OnDataChanged;
+            _subscribed = false;
+        }
+        _searchDebounce?.Cancel();
+        _searchDebounce?.Dispose();
+        _searchDebounce = null;
+    }
+
+    void OnDataChanged() =>
+        MainThread.BeginInvokeOnMainThread(Render);
+
+    async void DebounceSearch()
+    {
+        _searchDebounce?.Cancel();
+        _searchDebounce?.Dispose();
+        _searchDebounce = new CancellationTokenSource();
+        try
+        {
+            await Task.Delay(200, _searchDebounce.Token);
+            _page = 1;
+            Render();
+        }
+        catch (System.OperationCanceledException) { }
+    }
+
     void Render()
     {
+        var priced = _data.State.Positions.Count(x =>
+            x.LastPrice > 0 && x.MarketPriceAt.HasValue);
+        var newestPrice = _data.State.Positions
+            .Where(x => x.MarketPriceAt.HasValue)
+            .Select(x => x.MarketPriceAt)
+            .Max();
+        var latestImport = _data.State.TransactionImports
+            .OrderByDescending(x => x.ImportedAt)
+            .FirstOrDefault();
+        _freshness.Text = Loc.T(
+            $"Posisi: {latestImport?.CoverageEnd:dd MMM yyyy} • harga: {priced}/{_data.State.Positions.Count} posisi" +
+            (newestPrice.HasValue ? $" @ {newestPrice:dd MMM HH:mm}" : " • belum ada snapshot"),
+            $"Holdings: {latestImport?.CoverageEnd:dd MMM yyyy} • prices: {priced}/{_data.State.Positions.Count} positions" +
+            (newestPrice.HasValue ? $" @ {newestPrice:dd MMM HH:mm}" : " • no snapshot yet"));
         _list.Children.Clear();
         IEnumerable<Position> query = _data.State.Positions;
         if (!string.IsNullOrWhiteSpace(_search.Text))

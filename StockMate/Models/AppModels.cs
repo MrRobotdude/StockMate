@@ -127,6 +127,7 @@ public sealed class MarketSnapshot
     public List<string> FailedSymbols { get; set; } = [];
     public List<string> Errors { get; set; } = [];
     public List<SymbolMarketData> Symbols { get; set; } = [];
+    public SymbolMarketData? MarketIndex { get; set; }
 }
 
 public sealed class RealizedProfitDetail
@@ -183,6 +184,8 @@ public sealed class StrategyConfig
 public sealed class StrategyTrainingMetadata
 {
     public string Method { get; set; } = "";
+    public string Status { get; set; } = "";
+    public bool QualityGatePassed { get; set; }
     public DateTime TrainedAtUtc { get; set; }
     public string DataStart { get; set; } = "";
     public string DataEnd { get; set; } = "";
@@ -191,6 +194,9 @@ public sealed class StrategyTrainingMetadata
     public decimal OutOfSampleWinRate { get; set; }
     public decimal OutOfSampleAverageReturn { get; set; }
     public decimal OutOfSampleMaxDrawdown { get; set; }
+    public decimal OutOfSampleProfitFactor { get; set; }
+    public decimal OutOfSampleAuc { get; set; }
+    public decimal RecentBlockReturn { get; set; }
     public string DataFingerprint { get; set; } = "";
 }
 
@@ -200,6 +206,7 @@ public sealed class Position
     public int Lots { get; set; }
     public decimal AveragePrice { get; set; }
     public decimal LastPrice { get; set; }
+    public DateTime? MarketPriceAt { get; set; }
     public decimal StopLoss { get; set; }
     public decimal TakeProfit { get; set; }
     [JsonIgnore] public int Shares => Lots * 100;
@@ -237,6 +244,7 @@ public sealed class TradeTransaction
     public decimal SalesTax { get; set; }
     public Guid? ImportBatchId { get; set; }
     public Guid? SupersededByImportBatchId { get; set; }
+    public string BrokerAccountKey { get; set; } = "";
     public string Note { get; set; } = "";
     [JsonIgnore] public int Shares => Lots * 100;
     [JsonIgnore] public decimal GrossValue => Shares * Price;
@@ -256,7 +264,19 @@ public sealed class TransactionImportBatch
     public int AddedCount { get; set; }
     public int SkippedDuplicateCount { get; set; }
     public int SupersededManualCount { get; set; }
+    public int ReplacedHistoryCount { get; set; }
     public string FileFingerprint { get; set; } = "";
+    public int ParserVersion { get; set; }
+    public string Provider { get; set; } = "";
+    public string AccountNumber { get; set; } = "";
+    public string Sid { get; set; } = "";
+    public decimal ParsedBuyValue { get; set; }
+    public decimal ParsedSellValue { get; set; }
+    public decimal ParsedSalesTax { get; set; }
+    public decimal? DeclaredBuyValue { get; set; }
+    public decimal? DeclaredSellValue { get; set; }
+    public decimal? DeclaredSalesTax { get; set; }
+    public bool TotalsValidated { get; set; }
     public List<string> ReconciliationDetails { get; set; } = [];
 }
 
@@ -288,10 +308,31 @@ public sealed class ScanResult
     public decimal RiskReward { get; set; }
     public DateTime DataTime { get; set; }
     public string DataSession { get; set; } = "";
+    public decimal SignalOpen { get; set; }
+    public decimal SignalHigh { get; set; }
+    public decimal SignalLow { get; set; }
+    public decimal SignalClose { get; set; }
+    public decimal MovingAverage20 { get; set; }
+    public decimal MovingAverage50 { get; set; }
+    public decimal MovingAverage20SlopePercent { get; set; }
+    public decimal Return5PeriodsPercent { get; set; }
+    public decimal Return20PeriodsPercent { get; set; }
+    public decimal VolumeRatio { get; set; }
+    public decimal Rsi14 { get; set; }
+    public decimal MedianDailyValue { get; set; }
+    public decimal AtrPercent { get; set; }
+    public string PrimarySetup { get; set; } = "";
+    public string PrimarySetupEn { get; set; } = "";
+    public string ResearchStatus { get; set; } = "RULE_BASED_UNVALIDATED";
+    public decimal MarketReturn20Percent { get; set; }
+    public decimal MarketBreadth20Percent { get; set; }
+    public string MarketRegime { get; set; } = "UNKNOWN";
     public string Reasons { get; set; } = "";
     public string ReasonsEn { get; set; } = "";
     public string Risks { get; set; } = "";
     public string RisksEn { get; set; } = "";
+    public string EventSummary { get; set; } = "";
+    public string EventSummaryEn { get; set; } = "";
     public bool IsSpeculative { get; set; }
     public int AllocationRank { get; set; }
     public decimal AllocatedCash { get; set; }
@@ -319,20 +360,60 @@ public sealed class ScanRun
 
 public sealed class PredictionRecord
 {
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string SessionKey { get; set; } = "";
     public string Symbol { get; set; } = "";
     public string Verdict { get; set; } = "";
     public int Score { get; set; }
+    public int TechnicalScore { get; set; }
+    public int EventAdjustment { get; set; }
+    public int SuggestedLots { get; set; }
     public decimal StartPrice { get; set; }
     public decimal StopLoss { get; set; }
     public decimal Target1 { get; set; }
+    public decimal RiskReward { get; set; }
+    public decimal SignalOpen { get; set; }
+    public decimal SignalHigh { get; set; }
+    public decimal SignalLow { get; set; }
+    public decimal SignalClose { get; set; }
+    public string Reasons { get; set; } = "";
+    public string ReasonsEn { get; set; } = "";
+    public string Risks { get; set; } = "";
+    public string RisksEn { get; set; } = "";
+    public string EventSummary { get; set; } = "";
+    public string EventSummaryEn { get; set; } = "";
+    public string PrimarySetup { get; set; } = "";
+    public string PrimarySetupEn { get; set; } = "";
+    public string ResearchStatus { get; set; } = "RULE_BASED_UNVALIDATED";
+    public decimal MarketReturn20Percent { get; set; }
+    public decimal MarketBreadth20Percent { get; set; }
+    public string MarketRegime { get; set; } = "UNKNOWN";
     public DateTime PredictedAt { get; set; } = DateTime.Now;
     public DateTime SignalDate { get; set; }
     public DateTime? EntryFilledAt { get; set; }
     public decimal? FilledPrice { get; set; }
     public int MaximumHoldingDays { get; set; } = 20;
     public string DataSession { get; set; } = "";
+    // T+1 is stored independently from the final swing outcome. Previously the
+    // UI stayed on "waiting" until target/stop/time exit, even when the next
+    // trading day's candle had already been downloaded.
+    public DateTime? NextTradingDate { get; set; }
+    public decimal? NextOpen { get; set; }
+    public decimal? NextHigh { get; set; }
+    public decimal? NextLow { get; set; }
+    public decimal? NextClose { get; set; }
+    public string NextDayStatus { get; set; } = "WAITING";
+    public string NextDayNoteCode { get; set; } = "";
+    public decimal? NextDayReturnPercent { get; set; }
+    public decimal? NextDayMarketReturnPercent { get; set; }
+    public decimal? NextDayMaximumGainPercent { get; set; }
+    public decimal? NextDayMaximumLossPercent { get; set; }
+    public DateTime? LatestObservedDate { get; set; }
+    public decimal? LatestObservedClose { get; set; }
+    public decimal? LatestOpenReturnPercent { get; set; }
     public DateTime? EvaluatedAt { get; set; }
     public decimal? EvaluationPrice { get; set; }
     public decimal? ReturnPercent { get; set; }
     public string Outcome { get; set; } = "PENDING";
+    public int EvaluationVersion { get; set; } = 2;
 }

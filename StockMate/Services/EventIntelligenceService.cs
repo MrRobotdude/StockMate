@@ -11,13 +11,23 @@ public sealed class EventIntelligenceService(AppDataService data)
     static readonly string[] Positive =
     [
         "laba naik", "profit rises", "beat expectations", "dividen", "buyback",
-        "kontrak baru", "new contract", "upgrade", "ekspansi", "acquisition"
+        "kontrak baru", "new contract", "upgrade", "ekspansi", "acquisition",
+        "akuisisi", "laba melonjak", "record profit"
     ];
     static readonly string[] Negative =
     [
-        "laba turun", "profit falls", "miss expectations", "rights issue",
-        "dilusi", "downgrade", "suspensi", "uma", "gugatan", "default",
-        "fraud", "investigasi", "investigation"
+        "laba turun", "profit falls", "miss expectations", "downgrade", "uma",
+        "gugatan", "rugi bersih", "net loss", "penurunan laba"
+    ];
+    // These headlines need a conservative new-buy veto until the terms are
+    // reviewed. A small -3 keyword adjustment previously allowed a high
+    // technical score to hide material dilution or trading-risk events.
+    static readonly string[] HardNegative =
+    [
+        "rights issue", "right issue", "hmetd", "dilusi", "dilution",
+        "private placement", "penambahan modal tanpa hak memesan efek",
+        "suspensi", "suspension", "default", "fraud", "investigasi",
+        "investigation", "pailit", "bankruptcy"
     ];
 
     public async Task<int> RefreshAsync(CancellationToken ct = default)
@@ -110,6 +120,10 @@ public sealed class EventIntelligenceService(AppDataService data)
                     ? Loc.T(
                         "Judul tidak memberi sinyal dampak yang cukup jelas; tidak mengubah skor.",
                         "The headline does not provide a clear enough impact signal, so the score is unchanged.")
+                    : impact <= -20
+                        ? Loc.T(
+                            "Peristiwa material berisiko tinggi terdeteksi dari judul. Rekomendasi beli baru diblokir sampai detailnya ditelaah.",
+                            "A material high-risk event was detected in the headline. New buy recommendations are blocked until its terms are reviewed.")
                     : Loc.T(
                         $"Penyesuaian terbatas {impact:+#;-#;0} poin berdasarkan kata kunci pada judul berita.",
                         $"A limited adjustment of {impact:+#;-#;0} points was applied from headline keywords."),
@@ -121,6 +135,8 @@ public sealed class EventIntelligenceService(AppDataService data)
     static int Score(string title)
     {
         var text = title.ToLowerInvariant();
+        if (HardNegative.Any(text.Contains))
+            return -25;
         var positive = Positive.Count(x => text.Contains(x));
         var negative = Negative.Count(x => text.Contains(x));
         return Math.Clamp((positive - negative) * 3, -6, 6);
@@ -134,19 +150,44 @@ public sealed class EventIntelligenceService(AppDataService data)
 
     public (int Adjustment, string Summary) Summarize(string symbol)
     {
+        var summary = SummarizeDetails(symbol);
+        return (summary.Adjustment,
+            Loc.T(summary.SummaryId, summary.SummaryEn));
+    }
+
+    public EventSummarySnapshot SummarizeDetails(string symbol)
+    {
         var relevant = data.State.EventInsights
             .Where(x => x.Symbol == "MARKET" ||
                         x.Symbol.Equals(symbol, StringComparison.OrdinalIgnoreCase))
             .Where(x => x.PublishedAt >= DateTime.Now.AddDays(-3))
             .OrderByDescending(x => x.PublishedAt).ToList();
         if (relevant.Count == 0)
-            return (0, Loc.T(
+            return new EventSummarySnapshot(0,
                 "Data isu terbaru tidak cukup; keputusan tetap berbasis teknikal.",
-                "There is not enough recent event data; the decision remains technical."));
-        var adjustment = Math.Clamp(relevant.Sum(x => x.Impact), -8, 6);
+                "There is not enough recent event data; the decision remains technical.");
+        var adjustment = Math.Clamp(relevant.Sum(x => x.Impact), -30, 6);
         var strongest = relevant.OrderByDescending(x => Math.Abs(x.Impact)).First();
-        return (adjustment,
-            $"{Loc.Direction(strongest.Direction)}: {strongest.Title} " +
+        var directionId = strongest.Direction switch
+        {
+            "POSITIF" => "POSITIF",
+            "NEGATIF" => "NEGATIF",
+            _ => "NETRAL"
+        };
+        var directionEn = strongest.Direction switch
+        {
+            "POSITIF" => "POSITIVE",
+            "NEGATIF" => "NEGATIVE",
+            _ => "NEUTRAL"
+        };
+        return new EventSummarySnapshot(
+            adjustment,
+            $"{directionId}: {strongest.Title} " +
+            $"({strongest.Source}, {strongest.PublishedAt:dd MMM HH:mm}).",
+            $"{directionEn}: {strongest.Title} " +
             $"({strongest.Source}, {strongest.PublishedAt:dd MMM HH:mm}).");
     }
 }
+
+public readonly record struct EventSummarySnapshot(
+    int Adjustment, string SummaryId, string SummaryEn);

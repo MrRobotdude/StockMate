@@ -11,6 +11,7 @@ public sealed class SettingsPage : ContentPage
 {
     readonly AppDataService _data;
     readonly UniverseService _universe;
+    readonly EvaluationExportService _evaluationExport;
     readonly Entry _cash=new(){Keyboard=Keyboard.Numeric}, _officialRealized=new(){Keyboard=Keyboard.Numeric}, _risk=new(){Keyboard=Keyboard.Numeric}, _monthly=new(){Keyboard=Keyboard.Numeric}, _buyFee=new(){Keyboard=Keyboard.Numeric}, _sellFee=new(){Keyboard=Keyboard.Numeric}, _delay=new(){Keyboard=Keyboard.Numeric};
     readonly Switch _speculative=new(), _autoScan=new(), _autoEvents=new();
     readonly Picker _language = new() { Title = "Bahasa / Language", ItemsSource = new[] { "Bahasa Indonesia", "English" } };
@@ -18,7 +19,9 @@ public sealed class SettingsPage : ContentPage
     bool _saving;
     public SettingsPage(AppDataService data, UniverseService universe)
     {
-        _data=data; _universe=universe; Title=Loc.T("Pengaturan", "Settings"); BackgroundColor=UiKit.Navy;
+        _data=data; _universe=universe;
+        _evaluationExport = App.Services.GetRequiredService<EvaluationExportService>();
+        Title=Loc.T("Pengaturan", "Settings"); BackgroundColor=UiKit.Navy;
         var root=UiKit.PageStack(); root.Children.Add(UiKit.Heading(this, "Pengaturan", "Settings",
             "Pengaturan ini memengaruhi position sizing, estimasi fee, scanner, dan perhitungan portofolio. Perubahan bahasa diterapkan setelah menekan Simpan.",
             "These settings affect position sizing, fee estimates, scanner behavior, and portfolio calculations. Language changes apply after tapping Save."));
@@ -128,17 +131,27 @@ public sealed class SettingsPage : ContentPage
             Loc.T("Strategi analisis", "Analysis strategy"),
             Loc.T("Impor atau bagikan parameter hasil trainer", "Import or share trained parameters"),
             new VerticalStackLayout { Spacing=10, Children={strategyInfo,strategyButtons} }));
-        var importUniverse=UiKit.Secondary(Loc.T("Impor CSV/TXT", "Import CSV/TXT"));
         var updateUniverse=UiKit.Primary(Loc.T("Perbarui master IDX", "Update IDX master"));
-        var exportUniverse=UiKit.Secondary(Loc.T("Bagikan universe", "Share universe"));
+        var exportEvaluation=UiKit.Secondary(Loc.T(
+            "Ekspor evaluasi CSV", "Export evaluation CSV"));
         updateUniverse.Clicked += async(_,_)=>await UpdateUniverseAsync();
-        importUniverse.Clicked += async(_,_)=>await ImportUniverseAsync();
-        exportUniverse.Clicked += async(_,_)=>await ExportUniverseAsync();
-        var universeButtons=new Grid{ColumnDefinitions=[new(GridLength.Star),new(GridLength.Star)],ColumnSpacing=10}; universeButtons.Add(importUniverse,0); universeButtons.Add(exportUniverse,1);
+        exportEvaluation.Clicked += async(_,_)=>await ExportEvaluationAsync();
+        var universeButtons=new Grid{ColumnDefinitions=[new(GridLength.Star),new(GridLength.Star)],ColumnSpacing=10}; universeButtons.Add(updateUniverse,0); universeButtons.Add(exportEvaluation,1);
         root.Children.Add(UiKit.ExpandableCard(
-            Loc.T("Universe IDX", "IDX universe"),
-            Loc.T("Kelola daftar saham aktif", "Manage the active stock list"),
-            new VerticalStackLayout { Spacing=10, Children={_universeInfo,updateUniverse,universeButtons} }));
+            Loc.T("Data & evaluasi", "Data & evaluation"),
+            Loc.T("Universe online otomatis dan data audit", "Automatic online universe and audit data"),
+            new VerticalStackLayout
+            {
+                Spacing=10,
+                Children=
+                {
+                    _universeInfo,
+                    UiKit.Sub(Loc.T(
+                        "Daftar saham diperiksa otomatis setiap hari dari situs IDX. File universe manual tidak diperlukan.",
+                        "The stock list is checked automatically each day from the IDX website. A manual universe file is not required.")),
+                    universeButtons
+                }
+            }));
         var resetScan = UiKit.Secondary("Reset hasil & checkpoint scanner");
         var resetHistory = UiKit.Secondary("Reset transaction history");
         var resetAll = UiKit.Secondary("Reset seluruh aplikasi");
@@ -231,10 +244,11 @@ public sealed class SettingsPage : ContentPage
         _autoEvents.IsToggled = _data.State.AutoEventIntelligence;
         _language.SelectedIndex = _data.State.LanguageCode == "en" ? 1 : 0;
         _delay.Text=_data.State.RequestDelayMilliseconds.ToString();
-        var source = _data.State.UniverseSource.Length == 0
-            ? Loc.T("fallback lokal") : _data.State.UniverseSource;
-        var updated = _data.State.UniverseUpdatedAt?.ToString("dd MMM yyyy") ??
-                      Loc.T("belum pernah");
+        var source = _universe.SourceLabel;
+        var updated = _universe.UsingRecoverySnapshot
+            ? UniverseService.RecoverySnapshotDate
+            : _data.State.UniverseUpdatedAt?.ToString("dd MMM yyyy") ??
+              Loc.T("belum pernah");
         _universeInfo.Text = Loc.T(
             $"Universe aktif: {_universe.Symbols.Count} saham • sumber: {source} • diperbarui {updated}.",
             $"Active universe: {_universe.Symbols.Count} stocks • source: {source} • updated {updated}.");
@@ -248,7 +262,9 @@ public sealed class SettingsPage : ContentPage
             var result = await _universe.EnsureCurrentAsync(true, CancellationToken.None);
             Load();
             await AppDialog.ShowAsync(this,
-                result.Updated ? "Master diperbarui" : "Menggunakan cache",
+                result.Updated
+                    ? Loc.T("Master diperbarui", "Master list updated")
+                    : Loc.T("Menggunakan data pemulihan/cache", "Using recovery/cache data"),
                 Loc.T(
                     $"{result.Message}\nUniverse aktif: {result.Count} saham.",
                     $"{result.Message}\nActive universe: {result.Count} stocks."));
@@ -407,49 +423,32 @@ public sealed class SettingsPage : ContentPage
         }
     }
 
-    async Task ImportUniverseAsync()
+    async Task ExportEvaluationAsync()
     {
         try
         {
-            var file=await FilePicker.Default.PickAsync(new PickOptions
+            var result = await _evaluationExport.ExportAsync();
+            if (result.Rows == 0)
             {
-                PickerTitle=Loc.T("Pilih daftar kode saham IDX")
-            });
-            if(file is null)return;
-            await using var stream=await file.OpenReadAsync();
-            var count=await _universe.ImportAsync(stream);
-            _universeInfo.Text = Loc.T(
-                $"Universe aktif: {count} saham.",
-                $"Active universe: {count} stocks.");
-            await AppDialog.ShowAsync(this, "Universe diperbarui",
+                await AppDialog.ShowAsync(this,
+                    Loc.T("Belum ada data", "No data yet"),
+                    Loc.T(
+                        "Jalankan analisis closing untuk menghasilkan data evaluasi.",
+                        "Run a closing analysis to generate evaluation data."));
+                return;
+            }
+            await Share.Default.RequestAsync(new ShareFileRequest(
                 Loc.T(
-                    $"{count} kode saham tersimpan. Format boleh satu kode per baris atau CSV.",
-                    $"{count} stock symbols were saved. Use one symbol per line or CSV."));
+                    $"Data evaluasi StockMate • {result.Rows} baris",
+                    $"StockMate evaluation data • {result.Rows} rows"),
+                new ShareFile(result.Path)));
         }
         catch(Exception ex)
         {
             await AppDialog.ShowAsync(this, Loc.T("Gagal", "Failed"),
                 Loc.T(
-                    $"Universe tidak dapat dibaca: {ex.Message}",
-                    $"The universe could not be read: {ex.Message}"),
-                danger:true);
-        }
-    }
-
-    async Task ExportUniverseAsync()
-    {
-        try
-        {
-            var path=Path.Combine(FileSystem.CacheDirectory,"stockmate-idx-universe.txt");
-            await _universe.ExportAsync(path);
-            await Share.Default.RequestAsync(new ShareFileRequest("Universe IDX StockMate",new ShareFile(path)));
-        }
-        catch(Exception ex)
-        {
-            await AppDialog.ShowAsync(this, Loc.T("Gagal", "Failed"),
-                Loc.T(
-                    $"Universe tidak dapat dibagikan: {ex.Message}",
-                    $"The universe could not be shared: {ex.Message}"),
+                    $"Data evaluasi tidak dapat diekspor: {ex.Message}",
+                    $"Evaluation data could not be exported: {ex.Message}"),
                 danger:true);
         }
     }
@@ -457,19 +456,20 @@ public sealed class SettingsPage : ContentPage
     string StrategyText()
     {
         var strategy = _data.State.Strategy;
-        var trained = strategy.Training is null
+        var trained = strategy.Training is not
+            { QualityGatePassed: true, Status: "READY_FOR_FORWARD_TEST" }
             ? Loc.T(
-                "Fallback rule-based aktif. Model v2.1.1 belum dipakai karena belum menghasilkan bundle READY_FOR_FORWARD_TEST.",
-                "The rule-based fallback is active. Model v2.1.1 is not in use because it has not produced a READY_FOR_FORWARD_TEST bundle.")
+                "Rule engine aktif dan diberi label belum tervalidasi. Bundle model yang ditolak tidak pernah dipakai aplikasi.",
+                "The rule engine is active and labelled unvalidated. A rejected model bundle is never used by the app.")
             : Loc.T(
-                $"Walk-forward OOS: {strategy.Training.OutOfSampleFolds} fold • " +
+                $"Parameter rule-based memiliki metadata walk-forward OOS: {strategy.Training.OutOfSampleFolds} fold • " +
                 $"{strategy.Training.OutOfSampleTrades} trade • win rate " +
                 $"{strategy.Training.OutOfSampleWinRate:P1} • max DD " +
-                $"{strategy.Training.OutOfSampleMaxDrawdown:P1}",
-                $"Walk-forward OOS: {strategy.Training.OutOfSampleFolds} folds • " +
+                $"{strategy.Training.OutOfSampleMaxDrawdown:P1}. Bobot ML runtime belum diaktifkan.",
+                $"The rule-based parameters have walk-forward OOS metadata: {strategy.Training.OutOfSampleFolds} folds • " +
                 $"{strategy.Training.OutOfSampleTrades} trades • win rate " +
                 $"{strategy.Training.OutOfSampleWinRate:P1} • max DD " +
-                $"{strategy.Training.OutOfSampleMaxDrawdown:P1}");
+                $"{strategy.Training.OutOfSampleMaxDrawdown:P1}. Runtime ML weights are not active.");
         return Loc.T(
             $"Strategi aktif: v{strategy.Version}\nRR minimum {strategy.MinimumRiskReward:N1} • " +
             $"BUY ≥ {strategy.BuyScore} • WATCH ≥ {strategy.WatchScore}\n{trained}\n" +
@@ -495,13 +495,19 @@ public sealed class SettingsPage : ContentPage
                 await AppDialog.ShowAsync(this, "Tidak valid","Konfigurasi strategi tidak lolos validasi.",danger:true); return;
             }
             if (strategy.Training is { } training &&
-                (training.Method != "walk-forward-v1" ||
-                 training.OutOfSampleFolds < 3 ||
-                 training.OutOfSampleTrades < 30 ||
+                (!training.QualityGatePassed ||
+                 training.Status != "READY_FOR_FORWARD_TEST" ||
+                 training.OutOfSampleFolds < 5 ||
+                 training.OutOfSampleTrades < 100 ||
+                 training.OutOfSampleProfitFactor < 1.20m ||
+                 training.OutOfSampleAuc < .52m ||
                  string.IsNullOrWhiteSpace(training.DataFingerprint)))
             {
-                await AppDialog.ShowAsync(this, "Validasi training gagal",
-                    "Artefak training harus memiliki minimal 3 fold out-of-sample, 30 trade, dan fingerprint data.",
+                await AppDialog.ShowAsync(this,
+                    Loc.T("Validasi training gagal", "Training validation failed"),
+                    Loc.T(
+                        "Artefak harus berstatus READY_FOR_FORWARD_TEST, lolos quality gate, memiliki minimal 5 blok OOS lengkap, 100 trade, profit factor 1,20, AUC 0,52, dan fingerprint data.",
+                        "The artifact must be READY_FOR_FORWARD_TEST, pass every quality gate, and contain at least 5 complete OOS blocks, 100 trades, a 1.20 profit factor, 0.52 AUC, and a data fingerprint."),
                     danger:true);
                 return;
             }

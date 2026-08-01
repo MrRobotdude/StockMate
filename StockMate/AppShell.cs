@@ -22,7 +22,8 @@ public sealed class AppShell : Shell
         Items.Add(Tab(Loc.T("Scanner", "Scanner"), "⌕", () => new ScannerPage(
             data,
             App.Services.GetRequiredService<Services.ScanEngine>(),
-            App.Services.GetRequiredService<Services.PortfolioDecisionService>())));
+            App.Services.GetRequiredService<Services.PortfolioDecisionService>(),
+            App.Services.GetRequiredService<Services.EventIntelligenceService>())));
         Items.Add(Tab(Loc.T("Transaksi", "Transactions"), "✎", () => new JournalPage(
             data, App.Services.GetRequiredService<Services.TransactionHistoryService>())));
         Items.Add(Tab(Loc.T("Atur", "Settings"), "⚙", () => new SettingsPage(data, App.Services.GetRequiredService<Services.UniverseService>())));

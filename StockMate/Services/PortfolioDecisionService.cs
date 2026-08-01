@@ -46,20 +46,22 @@ public sealed class PortfolioDecisionService(
                 var effectiveTarget = position.TakeProfit > 0
                     ? position.TakeProfit
                     : scan?.Target1 ?? 0;
+                var hasMarketPrice = position.LastPrice > 0 &&
+                                     position.MarketPriceAt.HasValue;
 
                 var actionCode = "HOLD_NO_ADD";
                 var suggestedLots = 0;
                 var actionLots = 0;
                 var executionPrice = position.LastPrice;
 
-                if (effectiveStop > 0 &&
+                if (hasMarketPrice && effectiveStop > 0 &&
                     position.LastPrice <= effectiveStop)
                 {
                     actionCode = "SELL_ALL";
                     actionLots = position.Lots;
                     executionPrice = position.LastPrice;
                 }
-                else if (scan is not null && score < 55)
+                else if (hasMarketPrice && scan is not null && score < 55)
                 {
                     if (position.ProfitLossPercent < -5 ||
                         position.Lots <= 1)
@@ -74,14 +76,14 @@ public sealed class PortfolioDecisionService(
                     }
                     executionPrice = position.LastPrice;
                 }
-                else if (effectiveTarget > 0 &&
+                else if (hasMarketPrice && effectiveTarget > 0 &&
                          position.LastPrice >= effectiveTarget)
                 {
                     actionCode = "TAKE_PROFIT";
                     actionLots = HalfLots(position.Lots);
                     executionPrice = effectiveTarget;
                 }
-                else if (scan is not null &&
+                else if (hasMarketPrice && scan is not null &&
                          score >= data.State.Strategy.BuyScore &&
                          weight < 0.20m &&
                          position.LastPrice <= scan.EntryHigh)
@@ -95,7 +97,8 @@ public sealed class PortfolioDecisionService(
                             : "ADD";
                     executionPrice = scan.EntryHigh;
                 }
-                else if (weight > 0.30m && position.Lots > 1)
+                else if (hasMarketPrice && weight > 0.30m &&
+                         position.Lots > 1)
                 {
                     actionLots = LotsToConcentrationTarget(
                         position, totalEquity, 0.25m);
@@ -106,11 +109,17 @@ public sealed class PortfolioDecisionService(
                     }
                 }
 
-                var reason = BuildReason(
-                    scan, technicalScore, eventView.Adjustment, score,
-                    position.ProfitLossPercent, weight);
-                var confidenceScore = ConfidenceScore(
-                    actionCode, scan, score, weight, effectiveStop);
+                var reason = hasMarketPrice
+                    ? BuildReason(
+                        scan, technicalScore, eventView.Adjustment, score,
+                        position.ProfitLossPercent, weight)
+                    : Loc.T(
+                        "Posisi sudah berasal dari history broker, tetapi harga pasar belum tersedia. Jalankan Ambil Data; StockMate tidak membuat keputusan jual/beli dari harga nol atau cost basis.",
+                        "The holding is already derived from broker history, but no market price is available yet. Run Fetch Data; StockMate will not create a buy/sell decision from a zero price or cost basis.");
+                var confidenceScore = hasMarketPrice
+                    ? ConfidenceScore(
+                        actionCode, scan, score, weight, effectiveStop)
+                    : 20;
                 var confidence = confidenceScore >= 80
                     ? "HIGH"
                     : confidenceScore >= 60 ? "MEDIUM" : "LOW";
@@ -138,16 +147,27 @@ public sealed class PortfolioDecisionService(
                     Target = effectiveTarget,
                     Confidence = confidence,
                     ConfidenceScore = confidenceScore,
-                    RiskAction = RiskAction(
-                        actionCode, actionLots, suggestedLots,
-                        position, scan, trailing, effectiveStop),
+                    RiskAction = hasMarketPrice
+                        ? RiskAction(
+                            actionCode, actionLots, suggestedLots,
+                            position, scan, trailing, effectiveStop)
+                        : Loc.T(
+                            "Menunggu snapshot harga; tidak ada instruksi eksekusi.",
+                            "Waiting for a price snapshot; there is no execution instruction."),
                     TrailingStopPercent = trailing,
-                    TakeProfitAction = TakeProfitAction(
-                        actionCode, actionLots, position, scan,
-                        effectiveTarget),
+                    TakeProfitAction = hasMarketPrice
+                        ? TakeProfitAction(
+                            actionCode, actionLots, position, scan,
+                            effectiveTarget)
+                        : Loc.T(
+                            "Target dievaluasi setelah harga pasar tersedia.",
+                            "The target will be evaluated after a market price is available."),
                     Reason = reason,
-                    Invalidation = Invalidation(
-                        actionCode, scan, effectiveStop)
+                    Invalidation = hasMarketPrice
+                        ? Invalidation(actionCode, scan, effectiveStop)
+                        : Loc.T(
+                            "Jangan bertindak sebelum snapshot harga berhasil diambil.",
+                            "Do not act until a price snapshot has been fetched successfully.")
                 });
             }
 
@@ -237,11 +257,15 @@ public sealed class PortfolioDecisionService(
             return Loc.T(
                 "Belum ada skor terbaru untuk posisi ini; keputusan agresif ditahan.",
                 "There is no recent score for this position, so aggressive action is withheld.");
+        var evidence = Loc.English &&
+                       !string.IsNullOrWhiteSpace(scan.ReasonsEn)
+            ? scan.ReasonsEn
+            : scan.Reasons;
         return Loc.T(
-            $"Teknikal {technicalScore}/100, penyesuaian isu {eventAdjustment:+#;-#;0}, " +
+            $"{evidence}\n\nRingkasan posisi: teknikal {technicalScore}/100, penyesuaian isu {eventAdjustment:+#;-#;0}, " +
             $"skor gabungan {combinedScore}/100, P/L {profitLossPercent:+0.0;-0.0;0.0}%, " +
             $"bobot {weight:P0}.",
-            $"Technical {technicalScore}/100, event adjustment {eventAdjustment:+#;-#;0}, " +
+            $"{evidence}\n\nPosition summary: technical {technicalScore}/100, event adjustment {eventAdjustment:+#;-#;0}, " +
             $"combined score {combinedScore}/100, P/L {profitLossPercent:+0.0;-0.0;0.0}%, " +
             $"weight {weight:P0}.");
     }

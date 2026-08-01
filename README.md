@@ -1,9 +1,37 @@
-# StockMate 0.7.2
+# StockMate 0.8.0
 
 StockMate masih berada pada tahap pengembangan awal. Nomor versi publik memakai
 format `0.MINOR.PATCH`: fitur yang sudah stabil untuk satu milestone digabung
 dalam versi minor yang sama, sedangkan perbaikan kecil cukup menaikkan build
 APK tanpa membuat versi publik baru.
+
+## Yang tersedia di milestone 0.8
+
+- Universe saham diminta langsung dari daftar resmi IDX setiap hari, disimpan
+  sebagai cache, dan tidak lagi bergantung pada `idx-universe.txt` atau tombol
+  impor universe manual. Scan tidak diteruskan bila sumber online dan cache
+  belum memberi master minimal 500 saham.
+- Impor e-Statement Stockbit memvalidasi jumlah baris serta total BUY, SELL,
+  dan sales tax terhadap footer PDF. Statement lama hanya mengganti transaksi
+  pada akun dan rentang tanggal yang sama; transaksi manual di luar periode
+  tetap aktif.
+- Setelah impor, posisi dibangun ulang, snapshot harga terakhir langsung
+  dipasangkan bila tersedia, lalu Dashboard dan Portofolio menerima satu event
+  refresh yang konsisten. Posisi baru tanpa harga ditampilkan sebagai belum
+  terharga dan tidak pernah dianggap memiliki harga nol untuk keputusan jual.
+- Tombol **Ekspor evaluasi CSV** menggantikan ekspor universe. CSV memuat data
+  sebelum sinyal, order, hasil T+1, hasil swing, setup, risiko, rezim pasar,
+  versi strategi, dan status riset untuk audit atau diagnosis trainer.
+- Scanner mensyaratkan tren, momentum, volume, dan price action secara
+  bersamaan serta menampilkan setup utama dan rezim IHSG. MA20 saja tidak dapat
+  menghasilkan BUY.
+- State hanya mempertahankan snapshot rolling terbaru karena snapshot lama
+  menduplikasi hampir seluruh candle. Checkpoint tetap disimpan per batch 100
+  saham, sementara update notifikasi rutin dikoaleskan agar UI tetap terlihat
+  bergerak tanpa membebani Android.
+- Bundle model v2.1.1 yang ditolak tidak dimasukkan. Runtime aplikasi tetap
+  diberi label rule-based sampai ada bundle `READY_FOR_FORWARD_TEST` yang juga
+  lulus parity test implementasi.
 
 ## Yang tersedia di milestone 0.7
 
@@ -12,10 +40,29 @@ APK tanpa membuat versi publik baru.
 - Setelah scan closing 16.30 WIB memperbarui isu dan keputusan gabungan.
 - Cakupan dibatasi ke portofolio, 20 kandidat teratas, dan konteks pasar.
 - Detail memisahkan skor teknikal, penyesuaian isu, skor gabungan, sumber, dan waktu.
-- Dampak isu dibatasi -8 sampai +6 dan tidak mengalahkan aturan stop-loss.
+- Dampak isu biasa dibatasi, sedangkan corporate action/peristiwa berisiko
+  tinggi dapat memberi veto konservatif dan tidak pernah mengalahkan stop-loss.
 
 Feed gratis dapat terlambat atau tidak lengkap. Jika data tidak cukup, aplikasi
 menyatakan keputusan tetap berbasis teknikal dan tidak mengarang sentimen.
+
+### Evaluasi prediksi T+1 0.7.3
+
+- Evaluasi prediksi berada pada halaman scroll tersendiri, lengkap dengan
+  pencarian, filter status, ringkasan, dan pagination.
+- Setiap rekomendasi menyimpan data sebelum keputusan, instruksi prediksi,
+  realisasi OHLC hari bursa berikutnya, serta hasil akhir swing secara terpisah.
+- Rekomendasi berulang untuk simbol yang sama tetap disimpan per tanggal sinyal,
+  sehingga urutan HOPE hari T, T+1, dan seterusnya dapat dibandingkan.
+- Status T+1 langsung diperbarui setelah snapshot baru selesai diunduh; tidak
+  menunggu target, stop, atau batas holding 20 hari.
+- Simulasi GFD mengikuti instruksi UI: opening di atas limit membatalkan order,
+  bukan dianggap terisi ketika harga turun di tengah hari.
+- Alasan keputusan memakai data terukur: kemiringan MA20, posisi MA20/MA50,
+  momentum, RSI, rasio volume, kekuatan close, likuiditas, dan risk/reward net fee.
+- Tren moving average saja tidak cukup untuk menghasilkan rekomendasi BUY.
+- Rights issue, HMETD, private placement, dilusi, suspensi, default, fraud, dan
+  investigasi menjadi veto konservatif untuk rekomendasi beli baru.
 
 ### Koreksi prediksi dan instruksi lot 0.7.2
 
@@ -52,7 +99,7 @@ menyatakan keputusan tetap berbasis teknikal dan tidak mengarang sentimen.
 - Channel progres berprioritas normal; hasil selesai/gagal memakai channel
   terpisah berprioritas tinggi dengan suara dan getaran.
 - Notifikasi aktif menyediakan tombol `Hentikan` tanpa harus membuka aplikasi.
-- Recovery melanjutkan checkpoint per 10 saham tanpa mengulang seluruh IDX.
+- Recovery melanjutkan checkpoint per batch 100 saham tanpa mengulang seluruh IDX.
 - Force Stop tetap menghentikan alarm dan service sampai aplikasi dibuka lagi.
 
 ## Scanner, portofolio, dan keputusan
@@ -171,8 +218,8 @@ menyatakan keputusan tetap berbasis teknikal dan tidak mengarang sentimen.
 - Invested/modal, nilai pasar, unrealized, kas, dan total equity dipisahkan.
 - Fee e-Statement dihitung dengan tarif broker agar modal posisi konsisten.
 - Realized resmi Stockbit direkonsiliasi saat Sync Up; estimasi tetap dapat diaudit.
-- PDF diproses di background, checkpoint snapshot dikurangi menjadi tiap 10 saham,
-  dan update UI diperlambat maksimal sekitar 6 kali/detik agar tidak lag.
+- PDF diproses di background, checkpoint snapshot disimpan tiap batch 100 saham,
+  dan update UI/notifikasi rutin dikoaleskan agar tidak lag.
 - HTTP 403 mencoba endpoint harga kedua dan retry dengan log teknis eksplisit.
 
 - Sync Up mendeteksi SELL tanpa BUY/cost basis sebelumnya.
@@ -186,7 +233,9 @@ menyatakan keputusan tetap berbasis teknikal dan tidak mengarang sentimen.
 ## Universe IDX dan Sync Up
 
 - Scanner pada akhir pekan otomatis memakai closing hari bursa terakhir.
-- Universe fallback 99 tidak lagi dianggap sebagai full scan.
+- Snapshot pemulihan 963 kode hanya dipakai bila instalasi belum memiliki
+  cache penuh dan sumber IDX sementara gagal; aplikasi tetap mencoba refresh
+  resmi setiap hari.
 - Master universe wajib berisi minimal 500 saham; kegagalan sinkronisasi tampil jelas.
 - Snapshot 99 lama tidak digunakan sebagai hasil lengkap untuk universe yang lebih besar.
 - Realized P/L diberi label estimasi dan dapat diaudit per transaksi jual.
@@ -199,7 +248,7 @@ menyatakan keputusan tetap berbasis teknikal dan tidak mengarang sentimen.
   request master IDX.
 - Proses dibagi menjadi batch 100 saham dan menampilkan progres keseluruhan serta
   progres batch.
-- Panel proses teknis menyimpan 30 event terbaru: sumber data, simbol, request,
+- Panel proses teknis menyimpan 200 event terbaru: sumber data, simbol, request,
   respons, parsing, retry, rate limit, timeout, checkpoint, dan durasi.
 - Verifikasi closing dibatasi tiga kali; bila sumber data belum lengkap scanner
   melanjutkan dengan peringatan dan tidak menunggu tanpa batas.
@@ -208,12 +257,14 @@ menyatakan keputusan tetap berbasis teknikal dan tidak mengarang sentimen.
 - Aplikasi wajib meminta impor e-Statement/Transaction History sebelum membuka dashboard.
 - Scanner membagi universe menjadi batch berisi maksimal 100 saham.
 - UI dan notifikasi menampilkan batch aktif, jumlah batch, saham aktif, progres total, berhasil, dan gagal.
-- Checkpoint tetap disimpan per saham dan setiap akhir batch agar proses dapat dilanjutkan.
+- Checkpoint disimpan setiap akhir batch agar proses dapat dilanjutkan tanpa menulis state pada setiap saham.
 
 ## Impor e-Statement dan keputusan posisi
 
-- File history yang sama dapat diterapkan ulang untuk merekonsiliasi transaksi manual.
-- Setelah impor history, seluruh transaksi manual dinonaktifkan dari perhitungan portofolio dan dipindahkan ke arsip koreksi.
+- PDF yang terakhir diproses parser lama boleh direkonsiliasi ulang satu kali
+  setelah upgrade. Sesudah memakai parser baru, fingerprint mencegah file yang
+  sama diterapkan lagi, termasuk bila barisnya telah digantikan statement baru.
+- Setelah impor history, hanya transaksi manual di dalam periode statement yang dinonaktifkan dan dipindahkan ke arsip koreksi; transaksi di luar periode tetap aktif.
 - Halaman transaksi secara default hanya menampilkan transaksi aktif.
 - Ringkasan memisahkan nilai saham, kas tercatat, unrealized P/L, realized P/L, dan fee.
 - Kas negatif diberi peringatan rekonsiliasi dan tidak dipakai untuk menyarankan penambahan posisi.
@@ -277,7 +328,7 @@ powershell -ExecutionPolicy Bypass -File .\Build-Release.ps1
 Pada build pertama script membuat `stockmate-release.keystore`, meminta
 password, melakukan publish `Release`, lalu menghasilkan:
 
-`artifacts\release\StockMate-v0.7.2-release.apk`
+`artifacts\release\StockMate-v0.8.0-release.apk`
 
 Jangan kehilangan keystore atau password. Android hanya menerima update dengan
 application ID dan signing key yang sama. Keystore sudah dikecualikan dari Git.
@@ -350,21 +401,23 @@ Date,Symbol,Side,Lot,Price,Fee,Transaction ID
 2026-07-25 10:10:00,BBRI,SELL,1,3720,930,TRX-002
 ```
 
-Impor e-Statement PDF atau XLSX tidak diklaim tersedia. Jika Stockbit
-menghasilkan format berbeda, ekspor/simpan sebagai CSV terlebih dahulu dan
-periksa preview hasil impor, periode, lot, harga, fee, serta kas.
+E-Statement PDF Stockbit dengan tabel Transaction History didukung langsung.
+Format PDF broker lain atau XLSX belum diklaim kompatibel; gunakan CSV/TSV dan
+periksa hasil impor, periode, lot, harga, fee, serta kas.
 
 ## Master seluruh IDX
 
 - Saat startup dan sebelum scan, StockMate mencoba mengambil master emiten dari
   endpoint Listed Company IDX.
-- Cache master dianggap baru selama tujuh hari.
+- Master diminta ulang paling banyak sekali per hari; cache penuh tetap dipakai
+  ketika sumber resmi sementara tidak tersedia.
 - Pengaturan menampilkan jumlah, sumber, dan tanggal pembaruan.
 - Tombol **Perbarui master IDX** memaksa refresh.
-- Impor/ekspor CSV/TXT tetap tersedia sebagai fallback jika endpoint berubah.
-- Daftar 99 saham hanya menjadi fallback darurat ketika belum ada cache dan
-  sumber IDX tidak dapat diakses; scanner tidak lagi sengaja dibatasi ke daftar
-  tersebut.
+- Impor/ekspor universe manual sudah dihapus dari UI. Pengguna mengekspor data
+  evaluasi prediksi, bukan daftar kode saham.
+- Snapshot 963 kode bertanggal 25 Juli 2026 menjadi recovery darurat ketika
+  belum ada cache dan sumber IDX tidak dapat diakses. Sumber serta tanggalnya
+  tampil di Pengaturan dan bukan disamarkan sebagai refresh online baru.
 
 ## Closing, snapshot, dan scanner
 
@@ -377,7 +430,8 @@ periksa preview hasil impor, periode, lot, harga, fee, serta kas.
 - Request saham berjalan satu per satu dengan jeda default 750 ms.
 - HTTP 429 dianggap kondisi normal dan memakai backoff bertahap.
 - Error per simbol dicatat; satu kegagalan tidak membatalkan seluruh scan.
-- Setelah setiap simbol, snapshot langsung disimpan sebagai checkpoint.
+- Snapshot disimpan sebagai checkpoint setiap akhir batch 100 saham agar
+  recovery tetap tersedia tanpa menulis JSON besar pada setiap simbol.
 - Bila Android menghentikan aplikasi, scan berikutnya melanjutkan simbol yang
   belum berhasil dan tidak mengulang simbol yang sudah tersimpan.
 - Snapshot mempunyai status `IN_PROGRESS`, `PARTIAL`, `COMPLETE`, atau
@@ -385,7 +439,8 @@ periksa preview hasil impor, periode, lot, harga, fee, serta kas.
 - Analisis tidak dijalankan terhadap snapshot yang belum menyelesaikan seluruh
   antrean.
 - Data satu sesi dipakai ulang untuk analisis berikutnya kecuali refresh paksa.
-- Hanya enam snapshot terakhir yang disimpan agar penyimpanan terkendali.
+- State mempertahankan snapshot rolling terbaru; hasil evaluasi historis tetap
+  berada pada record rekomendasinya sendiri.
 
 Scanner menghitung SMA20/SMA50, RSI, ATR, volume confirmation, entry area,
 harga maksimal beli, stop loss, dua target, risk/reward, serta ukuran lot
@@ -420,7 +475,7 @@ baterai mungkin tetap diperlukan.
 ## Pengaturan
 
 Pengguna dapat mengubah fee beli/jual, risiko per transaksi, batas rugi
-bulanan, saham spekulatif, auto-scan, jeda request, universe, dan strategi JSON.
+bulanan, saham spekulatif, auto-scan, jeda request, dan strategi JSON.
 Hasil ekspor strategi bernama `stockmate_strategy.json`.
 
 ## Penyimpanan, rate limit, dan privasi
@@ -430,9 +485,9 @@ lokal; simpan Transaction History dan file penting di tempat lain.
 
 Pemindaian seluruh IDX tetap tidak dapat dijamin bebas rate limit atau blokir
 sementara. StockMate mengurangi risiko dengan satu request pada satu waktu,
-delay, cache sesi, checkpoint, dan backoff. Endpoint gratis atau endpoint IDX
-dapat berubah; impor universe manual tetap dipertahankan sebagai jalur
-pemulihan.
+delay, cache sesi, checkpoint, dan backoff. Bila endpoint resmi IDX berubah,
+aplikasi mempertahankan cache penuh terakhir dan mencoba pembaruan lagi pada
+proses berikutnya.
 
 Data market dan feed isu gratis dapat terlambat atau tidak lengkap. Analisis isu
 belum menggantikan pemeriksaan laporan keuangan, corporate action, foreign flow,

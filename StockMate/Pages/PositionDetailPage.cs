@@ -66,7 +66,13 @@ public sealed class PositionDetailPage : ContentPage
             Children =
             {
                 MetricLine("Harga rata-rata", $"Rp {position.AveragePrice:N2}"),
-                MetricLine("Harga pasar", $"Rp {position.LastPrice:N0}"),
+                MetricLine(Loc.T("Harga pasar", "Market price"),
+                    position.LastPrice > 0
+                        ? $"Rp {position.LastPrice:N0}"
+                        : Loc.T("Belum ada snapshot", "No snapshot yet")),
+                MetricLine(Loc.T("Waktu harga", "Price timestamp"),
+                    position.MarketPriceAt?.ToString("dd MMM yyyy HH:mm") ??
+                    Loc.T("Belum tersedia", "Unavailable")),
                 MetricLine("Nilai posisi", $"Rp {position.MarketValue:N0}"),
                 MetricLine("Modal posisi", $"Rp {position.Cost:N0}"),
                 MetricLine("Unrealized P/L",
@@ -243,9 +249,50 @@ public sealed class PositionDetailPage : ContentPage
             initiallyExpanded: true));
         _root.Children.Add(UiKit.ExpandableCard(
             "Alasan keputusan",
-            "Fakta yang mendukung setup",
-            UiKit.Sub(Loc.English && !string.IsNullOrWhiteSpace(scan.ReasonsEn)
-                ? scan.ReasonsEn : scan.Reasons)));
+            Loc.T(
+                "Bukti terukur, bukan satu indikator",
+                "Measured evidence, not a single indicator"),
+            new VerticalStackLayout
+            {
+                Spacing = 8,
+                Children =
+                {
+                    MetricLine(
+                        Loc.T("Setup utama", "Primary setup"),
+                        Loc.English &&
+                        !string.IsNullOrWhiteSpace(scan.PrimarySetupEn)
+                            ? scan.PrimarySetupEn
+                            : scan.PrimarySetup),
+                    MetricLine(
+                        Loc.T("Rezim pasar", "Market regime"),
+                        $"{scan.MarketRegime} · breadth {scan.MarketBreadth20Percent:0}%"),
+                    MetricLine(
+                        Loc.T("MA20 / MA50", "MA20 / MA50"),
+                        $"Rp {scan.MovingAverage20:N0} / Rp {scan.MovingAverage50:N0}"),
+                    MetricLine(
+                        Loc.T("Kemiringan MA20", "MA20 slope"),
+                        $"{scan.MovingAverage20SlopePercent:+0.00;-0.00;0.00}%"),
+                    MetricLine(
+                        Loc.T("Momentum 5 periode", "5-period momentum"),
+                        $"{scan.Return5PeriodsPercent:+0.00;-0.00;0.00}%"),
+                    MetricLine(
+                        Loc.T("Volume vs median", "Volume vs median"),
+                        $"{scan.VolumeRatio:0.00}×"),
+                    MetricLine(
+                        Loc.T("RSI14", "RSI14"),
+                        $"{scan.Rsi14:0.0}"),
+                    MetricLine(
+                        Loc.T("Median nilai transaksi", "Median traded value"),
+                        Loc.T(
+                            $"Rp {scan.MedianDailyValue / 1_000_000_000m:0.0} miliar",
+                            $"Rp {scan.MedianDailyValue / 1_000_000_000m:0.0} billion")),
+                    UiKit.Sub(
+                        Loc.English &&
+                        !string.IsNullOrWhiteSpace(scan.ReasonsEn)
+                            ? scan.ReasonsEn
+                            : scan.Reasons)
+                }
+            }));
         _root.Children.Add(UiKit.ExpandableCard(
             "Risiko & pembatalan",
             Loc.T(
@@ -254,18 +301,26 @@ public sealed class PositionDetailPage : ContentPage
             UiKit.Sub(Loc.T(
                 $"{scan.Risks}\n\nRekomendasi batal jika harga melewati batas beli atau menembus stop loss.",
                 $"{(string.IsNullOrWhiteSpace(scan.RisksEn) ? scan.Risks : scan.RisksEn)}\n\nThe recommendation is invalid if price exceeds the buy limit or breaks the stop loss."))));
-        var eventView = _data.State.AutoEventIntelligence
+        var liveEvent = _data.State.AutoEventIntelligence
             ? App.Services.GetRequiredService<EventIntelligenceService>()
                 .Summarize(_symbol)
             : (Adjustment: 0, Summary: Loc.T(
                 "Analisis isu dinonaktifkan.",
                 "Event analysis is disabled."));
+        var frozenEvent = Loc.English &&
+                          !string.IsNullOrWhiteSpace(
+                              scan.EventSummaryEn)
+            ? scan.EventSummaryEn
+            : scan.EventSummary;
+        var eventSummary = string.IsNullOrWhiteSpace(frozenEvent)
+            ? liveEvent.Summary
+            : frozenEvent;
         _root.Children.Add(UiKit.ExpandableCard(
             "Isu & peristiwa terbaru",
             Loc.T(
-                $"Penyesuaian skor {eventView.Adjustment:+#;-#;0}",
-                $"Score adjustment {eventView.Adjustment:+#;-#;0}"),
-            UiKit.Sub(eventView.Summary)));
+                $"Penyesuaian skor {scan.EventAdjustment:+#;-#;0}",
+                $"Score adjustment {scan.EventAdjustment:+#;-#;0}"),
+            UiKit.Sub(eventSummary)));
 
         var buy = UiKit.Primary(Loc.T("Catat BUY"));
         buy.IsEnabled = scan.SuggestedLots > 0 && scan.Verdict.Contains("BUY");

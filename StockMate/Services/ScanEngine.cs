@@ -52,6 +52,10 @@ public sealed class ScanEngine(
         bool requireVerifiedClosing = false)
     {
         var preparationStarted = DateTime.UtcNow;
+        var universeResult = await universe.EnsureCurrentAsync(
+            force: !universe.HasFullUniverse,
+            ct: ct,
+            progress: progress);
         if (!universe.HasFullUniverse)
         {
             progress?.Report(new()
@@ -60,15 +64,13 @@ public sealed class ScanEngine(
                 Message = $"Master universe belum lengkap ({data.State.MarketUniverse.Count} tersimpan); sinkronisasi IDX",
                 Total = data.State.MarketUniverse.Count,
                 Source = "IDX Listed Company",
-                TechnicalDetail = "Fallback 99 tidak akan dipakai sebagai full universe"
+                TechnicalDetail = "Universe di bawah 500 kode tidak akan dipakai sebagai full universe"
             });
-            var refreshed = await universe.EnsureCurrentAsync(true, ct, progress);
-            if (!universe.HasFullUniverse)
-                throw new InvalidOperationException(Loc.T(
-                    $"Master universe belum lengkap ({data.State.MarketUniverse.Count} saham tersimpan). " +
-                    "Pembaruan IDX gagal. Buka Atur > Perbarui master IDX atau impor file universe; scanner tidak menjalankan fallback 99.",
-                    $"The master universe is incomplete ({data.State.MarketUniverse.Count} saved stocks). " +
-                    "The IDX update failed. Open Settings > Update IDX master or import a universe file; the scanner will not use the 99-stock fallback."));
+            throw new InvalidOperationException(Loc.T(
+                $"Master universe belum lengkap ({data.State.MarketUniverse.Count} saham tersimpan). " +
+                "Pembaruan online IDX gagal. StockMate tidak menjalankan scan parsial dan akan mencoba lagi otomatis.",
+                $"The master universe is incomplete ({data.State.MarketUniverse.Count} saved stocks). " +
+                "The online IDX refresh failed. StockMate will not run a partial scan and will retry automatically."));
         }
         var session = ResolveSession(intraday, DateTime.Now);
         session = await ResolveAvailablePreviousCloseAsync(
@@ -85,16 +87,12 @@ public sealed class ScanEngine(
             Source = "cache lokal",
             TechnicalDetail = "Menghitung filter spekulatif dan kode unik; belum melakukan request harga"
         });
-        // A cached universe is sufficient to scan. Do not block batch formation
-        // on a network refresh; users can force-refresh it from Settings.
-        var universeResult = (Count: knownTotal, Updated: false,
-            Message: "Memakai universe aktif agar scan dapat langsung dimulai.");
         progress?.Report(new()
         {
             Stage = "UNIVERSE_READY",
             Message = $"{universeResult.Message} Universe aktif: {universeResult.Count} saham",
             Total = universeResult.Count,
-            Source = "cache lokal",
+            Source = universe.SourceLabel,
             ElapsedMilliseconds = (long)(DateTime.UtcNow - preparationStarted).TotalMilliseconds,
             TechnicalDetail = "Universe dibekukan untuk sesi ini; membentuk batch 100 saham"
         });
@@ -114,7 +112,22 @@ public sealed class ScanEngine(
             $"{session.TradingDate:yyyy-MM-dd}-{(session.Intraday ? "S1" : "S2")}";
         var cached = data.State.MarketSnapshots.LastOrDefault(x => x.SessionKey == key);
         if (cached?.IsComplete == true && cached.FailedSymbols.Count == 0 &&
-            cached.RequestedCount == knownTotal && !force) return cached;
+            cached.RequestedCount == knownTotal && !force)
+        {
+            var changed = false;
+            if (cached.MarketIndex is null)
+                changed = await PopulateMarketIndexAsync(
+                    cached, session.Intraday, session.TradingDate,
+                    progress, ct);
+            if (cached.Session == "EVENING" &&
+                EvaluateHistory(cached.Symbols))
+                changed = true;
+            if (data.ApplyMarketPrices(cached))
+                changed = true;
+            if (changed)
+                await data.SaveAsync();
+            return cached;
+        }
 
         var symbols = universe.Symbols
             .Where(x => data.State.IncludeSpeculative || !universe.IsSpeculative(x))
@@ -219,7 +232,9 @@ public sealed class ScanEngine(
                         });
                         // Publish a successful symbol immediately. Portfolio
                         // detail no longer waits for the full IDX scan.
-                        data.ApplyMarketPrice(symbol, candles[^1].Close);
+                        data.ApplyMarketPrice(
+                            symbol, candles[^1].Close,
+                            candles[^1].Time, notify: false);
                         progress?.Report(new()
                         {
                             Stage = "REQUEST_OK",
@@ -269,12 +284,6 @@ public sealed class ScanEngine(
                         BatchCompleted = batchDone, BatchSize = batchSymbols.Length,
                         LastCompletedBatch = Math.Max(0, batchNumber - 1)
                     });
-                    // Persisting the full candle snapshot after every symbol
-                    // repeatedly serializes several megabytes and stalls the UI.
-                    // A small checkpoint interval retains resume support without
-                    // hundreds of full-file writes.
-                    if (batchDone % 10 == 0)
-                        await data.SaveAsync();
                 }
                 if (data.State.RequestDelayMilliseconds > 0)
                     await Task.Delay(data.State.RequestDelayMilliseconds, ct);
@@ -290,15 +299,26 @@ public sealed class ScanEngine(
                 BatchCompleted = batchSymbols.Length, BatchSize = batchSymbols.Length,
                 LastCompletedBatch = batchNumber
             });
-            await data.SaveAsync();
+            // One silent checkpoint per 100-stock batch retains resume support
+            // without repeatedly rebuilding every visible page.
+            await data.SaveCheckpointAsync();
         }
 
+        await PopulateMarketIndexAsync(
+            snapshot, session.Intraday, session.TradingDate,
+            progress, ct);
         snapshot.IsComplete = snapshot.CompletedCount >= snapshot.RequestedCount;
         snapshot.Status = snapshot.IsComplete
             ? (snapshot.FailedSymbols.Count == 0 ? "COMPLETE" : "COMPLETE_WITH_ERRORS")
             : "PARTIAL";
-        data.State.MarketSnapshots = data.State.MarketSnapshots
-            .OrderByDescending(x => x.CapturedAt).Take(6).OrderBy(x => x.CapturedAt).ToList();
+        if (snapshot.IsComplete &&
+            snapshot.Session == "EVENING")
+            EvaluateHistory(snapshot.Symbols);
+        // A finalized snapshot already carries the rolling price history used
+        // by evaluation and analysis. Older snapshots duplicate almost all of
+        // those candles, so keeping them inflated app-state JSON and slowed
+        // every later save. ScanHistory retains the durable prediction audit.
+        data.State.MarketSnapshots = [snapshot];
         await data.SaveAsync();
         return snapshot;
     }
@@ -468,6 +488,93 @@ public sealed class ScanEngine(
     readonly record struct SessionResolution(
         DateTime TradingDate, bool Intraday, bool IsPreviousTradingDay);
 
+    async Task<bool> PopulateMarketIndexAsync(
+        MarketSnapshot snapshot, bool intraday, DateTime tradingDate,
+        IProgress<ScanProgress>? progress, CancellationToken ct)
+    {
+        try
+        {
+            progress?.Report(new()
+            {
+                Stage = "MARKET_REGIME",
+                Message = Loc.T(
+                    "Mengambil IHSG untuk konteks rezim pasar",
+                    "Fetching the JCI for market-regime context"),
+                Source = "Yahoo Finance ^JKSE",
+                Completed = snapshot.CompletedCount,
+                Total = snapshot.RequestedCount
+            });
+            var candles = await GetWithRetryAsync(
+                "^JKSE", intraday, progress, ct);
+            candles = candles
+                .Where(x => x.Time.Date <= tradingDate.Date)
+                .OrderBy(x => x.Time)
+                .ToList();
+            if (candles.Count == 0) return false;
+            snapshot.MarketIndex = new SymbolMarketData
+            {
+                Symbol = "^JKSE",
+                Candles = candles
+            };
+            return true;
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            // A missing index makes the regime UNKNOWN; it must not discard an
+            // otherwise valid full-market snapshot.
+            progress?.Report(new()
+            {
+                Stage = "MARKET_REGIME_FALLBACK",
+                Message = Loc.T(
+                    "IHSG belum tersedia; rezim pasar ditandai UNKNOWN",
+                    "JCI is unavailable; market regime is marked UNKNOWN"),
+                Source = "Yahoo Finance ^JKSE",
+                TechnicalDetail = $"{ex.GetType().Name}: {ex.Message}"
+            });
+            return false;
+        }
+    }
+
+    readonly record struct MarketContext(
+        decimal Return20Percent,
+        decimal Breadth20Percent,
+        bool IndexAboveMa20,
+        string Regime);
+
+    static MarketContext BuildMarketContext(MarketSnapshot snapshot)
+    {
+        var breadthEligible = snapshot.Symbols
+            .Select(x => ToDailyCandles(x.Candles))
+            .Where(x => x.Count >= 20)
+            .ToList();
+        var breadth = breadthEligible.Count == 0
+            ? 0m
+            : breadthEligible.Count(x =>
+                x[^1].Close > x.TakeLast(20).Average(y => y.Close)) *
+              100m / breadthEligible.Count;
+
+        var indexBars = snapshot.MarketIndex is null
+            ? new List<Candle>()
+            : ToDailyCandles(snapshot.MarketIndex.Candles);
+        if (indexBars.Count < 21)
+            return new MarketContext(0, breadth, false, "UNKNOWN");
+        var indexClose = indexBars[^1].Close;
+        var indexReturn20 = indexBars[^21].Close <= 0
+            ? 0
+            : (indexClose / indexBars[^21].Close - 1m) * 100m;
+        var indexMa20 = indexBars.TakeLast(20).Average(x => x.Close);
+        var indexAboveMa20 = indexClose >= indexMa20;
+        var regime = indexReturn20 <= -4m ||
+                     (!indexAboveMa20 && breadth < 45m)
+            ? "RISK_OFF"
+            : indexReturn20 > 0m &&
+              indexAboveMa20 && breadth >= 55m
+                ? "RISK_ON"
+                : "NEUTRAL";
+        return new MarketContext(
+            indexReturn20, breadth, indexAboveMa20, regime);
+    }
+
     public async Task<List<ScanResult>> AnalyzeAsync(
         bool intraday, MarketSnapshot snapshot, bool usedCache,
         IProgress<ScanProgress>? progress, CancellationToken ct)
@@ -477,11 +584,14 @@ public sealed class ScanEngine(
                 $"Snapshot masih parsial ({snapshot.CompletedCount}/{snapshot.RequestedCount}). Lanjutkan pengambilan data sebelum analisis.",
                 $"The snapshot is still partial ({snapshot.CompletedCount}/{snapshot.RequestedCount}). Continue fetching data before analysis."));
         var output = new List<ScanResult>();
+        var marketContext = BuildMarketContext(snapshot);
         var completed = 0;
         foreach (var item in snapshot.Symbols)
         {
             ct.ThrowIfCancellationRequested();
-            var result = Evaluate(item.Symbol, item.Candles, intraday, item.IsSpeculative);
+            var result = Evaluate(
+                item.Symbol, item.Candles, intraday,
+                item.IsSpeculative, marketContext);
             if (result is not null)
             {
                 // The source candle timestamp can be UTC or session-open time.
@@ -517,7 +627,8 @@ public sealed class ScanEngine(
             .ThenByDescending(x => x.RiskReward)
             .ThenByDescending(x => x.LastPrice)
             .ToList();
-        EvaluateHistory(snapshot.Symbols);
+        if (snapshot.Session == "EVENING")
+            EvaluateHistory(snapshot.Symbols);
         data.ApplyMarketPrices(snapshot);
         // Keep all evaluated shares for audit, but only actionable BUY AREA
         // results are recommendations and prediction-performance observations.
@@ -544,14 +655,38 @@ public sealed class ScanEngine(
             // Re-running the same session must not reset the prediction clock
             // or turn an already-filled/finished signal into a new prediction.
             if (preservedOutcomes?.TryGetValue(x.Symbol, out var prior) == true)
+            {
+                EnrichPrediction(prior, x, snapshot.SessionKey);
                 return prior;
+            }
             return new PredictionRecord
             {
+                SessionKey = snapshot.SessionKey,
                 Symbol = x.Symbol, Verdict = x.Verdict,
                 Score = x.CombinedScore,
+                TechnicalScore = x.Score,
+                EventAdjustment = x.EventAdjustment,
+                SuggestedLots = x.SuggestedLots,
                 StartPrice = x.EntryHigh,
                 StopLoss = x.StopLoss,
                 Target1 = x.Target1,
+                RiskReward = x.RiskReward,
+                SignalOpen = x.SignalOpen,
+                SignalHigh = x.SignalHigh,
+                SignalLow = x.SignalLow,
+                SignalClose = x.SignalClose,
+                Reasons = x.Reasons,
+                ReasonsEn = x.ReasonsEn,
+                Risks = x.Risks,
+                RisksEn = x.RisksEn,
+                EventSummary = x.EventSummary,
+                EventSummaryEn = x.EventSummaryEn,
+                PrimarySetup = x.PrimarySetup,
+                PrimarySetupEn = x.PrimarySetupEn,
+                ResearchStatus = x.ResearchStatus,
+                MarketReturn20Percent = x.MarketReturn20Percent,
+                MarketBreadth20Percent = x.MarketBreadth20Percent,
+                MarketRegime = x.MarketRegime,
                 PredictedAt = DateTime.Now,
                 SignalDate = x.DataTime.Date,
                 MaximumHoldingDays = x.MaximumHoldingDays,
@@ -566,6 +701,16 @@ public sealed class ScanEngine(
             foreach (var prior in preservedOutcomes.Values
                          .Where(x => !activeSymbols.Contains(x.Symbol)))
             {
+                var current = ranked.FirstOrDefault(x =>
+                    x.Symbol.Equals(
+                        prior.Symbol,
+                        StringComparison.OrdinalIgnoreCase));
+                if (current is not null)
+                    EnrichPrediction(
+                        prior,
+                        current,
+                        snapshot.SessionKey,
+                        preserveExecutionPlan: true);
                 // A pre-opening event refresh can veto a recommendation made
                 // at 07:00. Keep the audit record, but make it explicit that
                 // the order must be cancelled before it can be filled.
@@ -596,6 +741,38 @@ public sealed class ScanEngine(
             data.State.ScanHistory = data.State.ScanHistory.OrderByDescending(x => x.RunTime).Take(60).OrderBy(x => x.RunTime).ToList();
         await data.SaveAsync();
         return ranked;
+    }
+
+    static void EnrichPrediction(
+        PredictionRecord prediction, ScanResult result, string sessionKey,
+        bool preserveExecutionPlan = false)
+    {
+        prediction.SessionKey = string.IsNullOrWhiteSpace(
+            prediction.SessionKey) ? sessionKey : prediction.SessionKey;
+        prediction.TechnicalScore = result.Score;
+        prediction.EventAdjustment = result.EventAdjustment;
+        prediction.Score = result.CombinedScore;
+        if (!preserveExecutionPlan)
+        {
+            prediction.SuggestedLots = result.SuggestedLots;
+            prediction.RiskReward = result.RiskReward;
+        }
+        prediction.SignalOpen = result.SignalOpen;
+        prediction.SignalHigh = result.SignalHigh;
+        prediction.SignalLow = result.SignalLow;
+        prediction.SignalClose = result.SignalClose;
+        prediction.Reasons = result.Reasons;
+        prediction.ReasonsEn = result.ReasonsEn;
+        prediction.Risks = result.Risks;
+        prediction.RisksEn = result.RisksEn;
+        prediction.EventSummary = result.EventSummary;
+        prediction.EventSummaryEn = result.EventSummaryEn;
+        prediction.PrimarySetup = result.PrimarySetup;
+        prediction.PrimarySetupEn = result.PrimarySetupEn;
+        prediction.ResearchStatus = result.ResearchStatus;
+        prediction.MarketReturn20Percent = result.MarketReturn20Percent;
+        prediction.MarketBreadth20Percent = result.MarketBreadth20Percent;
+        prediction.MarketRegime = result.MarketRegime;
     }
 
     static void FreezeCancelledSignals(
@@ -689,12 +866,15 @@ public sealed class ScanEngine(
                 item.CombinedScore = item.Score;
                 continue;
             }
-            var eventView = events.Summarize(item.Symbol);
+            var eventView = events.SummarizeDetails(item.Symbol);
             item.EventAdjustment = eventView.Adjustment;
+            item.EventSummary = eventView.SummaryId;
+            item.EventSummaryEn = eventView.SummaryEn;
             item.CombinedScore = Math.Clamp(
                 item.Score + eventView.Adjustment, 0, 100);
             if (item.Verdict != "BUY AREA" ||
-                item.CombinedScore >= threshold)
+                (item.CombinedScore >= threshold &&
+                 item.EventAdjustment > -20))
                 continue;
 
             // Event data may veto a technical entry, but it never upgrades a
@@ -702,13 +882,17 @@ public sealed class ScanEngine(
             item.Verdict = "WATCH";
             item.SuggestedLots = 0;
             item.ExecutionNote =
-                $"Beli dibatalkan oleh veto isu: skor gabungan {item.CombinedScore}/100 di bawah batas {threshold}.";
+                item.EventAdjustment <= -20
+                    ? "Beli dibatalkan: corporate action/peristiwa material berisiko tinggi perlu ditelaah sebelum entry."
+                    : $"Beli dibatalkan oleh veto isu: skor gabungan {item.CombinedScore}/100 di bawah batas {threshold}.";
             item.ExecutionNoteEn =
-                $"Buy cancelled by the event veto: combined score {item.CombinedScore}/100 is below the {threshold} threshold.";
+                item.EventAdjustment <= -20
+                    ? "Buy cancelled: a material corporate action/high-risk event must be reviewed before entry."
+                    : $"Buy cancelled by the event veto: combined score {item.CombinedScore}/100 is below the {threshold} threshold.";
             item.Risks +=
-                $", penyesuaian isu {item.EventAdjustment:+#;-#;0} membatalkan sinyal beli";
+                $"\n• Penyesuaian isu {item.EventAdjustment:+#;-#;0} membatalkan sinyal beli.";
             item.RisksEn +=
-                $", an event adjustment of {item.EventAdjustment:+#;-#;0} cancelled the buy signal";
+                $"\n• An event adjustment of {item.EventAdjustment:+#;-#;0} cancelled the buy signal.";
         }
     }
 
@@ -725,17 +909,50 @@ public sealed class ScanEngine(
         return (results, usedCache, snapshot);
     }
 
-    void EvaluateHistory(IReadOnlyCollection<SymbolMarketData> marketData)
+    public async Task UpdatePredictionHistoryAsync()
     {
-        var candlesBySymbol = marketData.ToDictionary(
-            x => x.Symbol,
-            x => ToDailyCandles(x.Candles),
-            StringComparer.OrdinalIgnoreCase);
+        var snapshot = data.State.MarketSnapshots
+            .Where(x => x.IsComplete &&
+                        x.Session == "EVENING" &&
+                        x.Symbols.Count > 0)
+            .OrderByDescending(x => x.TradingDate)
+            .ThenByDescending(x => x.Session == "EVENING")
+            .ThenByDescending(x => x.CapturedAt)
+            .FirstOrDefault();
+        if (snapshot is null) return;
+        if (EvaluateHistory(snapshot.Symbols))
+            await data.SaveAsync();
+    }
+
+    bool EvaluateHistory(IReadOnlyCollection<SymbolMarketData> marketData)
+    {
+        var candlesBySymbol = marketData
+            .GroupBy(x => x.Symbol, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                x => x.Key,
+                x => ToDailyCandles(x.Last().Candles),
+                StringComparer.OrdinalIgnoreCase);
         var now = DateTime.Now;
+        var changed = false;
         foreach (var run in data.State.ScanHistory)
         {
-            foreach (var prediction in run.Predictions.Where(x => x.Outcome == "PENDING"))
+            foreach (var prediction in run.Predictions)
             {
+                if (string.IsNullOrWhiteSpace(prediction.SessionKey))
+                {
+                    prediction.SessionKey = run.SessionKey;
+                    changed = true;
+                }
+                if (prediction.Id == Guid.Empty)
+                {
+                    prediction.Id = Guid.NewGuid();
+                    changed = true;
+                }
+                if (prediction.EvaluationVersion < 2)
+                {
+                    ResetLegacyEvaluation(prediction);
+                    changed = true;
+                }
                 if (!candlesBySymbol.TryGetValue(
                         prediction.Symbol, out var allCandles) ||
                     allCandles.Count == 0) continue;
@@ -743,28 +960,113 @@ public sealed class ScanEngine(
                 var signalDate = prediction.SignalDate == default
                     ? prediction.PredictedAt.Date
                     : prediction.SignalDate.Date;
+                if (prediction.SignalDate == default)
+                {
+                    prediction.SignalDate = signalDate;
+                    changed = true;
+                }
+                var signalCandle = allCandles
+                    .Where(x => x.Time.Date <= signalDate)
+                    .OrderBy(x => x.Time)
+                    .LastOrDefault();
+                if (signalCandle is not null && prediction.SignalClose <= 0)
+                {
+                    prediction.SignalOpen = signalCandle.Open;
+                    prediction.SignalHigh = signalCandle.High;
+                    prediction.SignalLow = signalCandle.Low;
+                    prediction.SignalClose = signalCandle.Close;
+                    changed = true;
+                }
+
                 var future = allCandles
                     .Where(x => x.Time.Date > signalDate)
                     .OrderBy(x => x.Time)
                     .ToList();
                 if (future.Count == 0) continue;
 
+                var next = future[0];
+                if (!prediction.NextTradingDate.HasValue)
+                {
+                    CaptureNextTradingDay(prediction, next);
+                    changed = true;
+                }
+
+                if (prediction.Outcome == "CANCELLED")
+                {
+                    if (prediction.NextDayStatus != "CANCELLED")
+                    {
+                        prediction.NextDayStatus = "CANCELLED";
+                        prediction.NextDayNoteCode = "CANCELLED_BEFORE_OPEN";
+                        changed = true;
+                    }
+                    continue;
+                }
+
+                if (prediction.Outcome == "NOT_FILLED")
+                    continue;
+
                 if (!prediction.EntryFilledAt.HasValue)
                 {
-                    var entryCandle = future[0];
-                    if (entryCandle.Low > prediction.StartPrice)
+                    // The instruction shown by StockMate is one exact GFD limit
+                    // and "cancel if opening is above it". The old evaluator
+                    // incorrectly counted a later intraday pullback as filled.
+                    if (next.Open > 0 &&
+                        next.Open > prediction.StartPrice)
                     {
-                        // Good-for-Day order expired without being filled.
-                        prediction.EvaluatedAt = now;
-                        prediction.EvaluationPrice = entryCandle.Close;
-                        prediction.ReturnPercent = 0;
-                        prediction.Outcome = "NOT_FILLED";
+                        MarkNotFilled(
+                            prediction, next, now, "OPEN_ABOVE_LIMIT");
+                        changed = true;
                         continue;
                     }
-                    prediction.EntryFilledAt = entryCandle.Time;
-                    prediction.FilledPrice = entryCandle.Open > 0
-                        ? Math.Min(entryCandle.Open, prediction.StartPrice)
+                    if (next.Open > 0 &&
+                        next.Open <= prediction.StopLoss)
+                    {
+                        MarkNotFilled(
+                            prediction, next, now, "OPEN_BELOW_STOP");
+                        changed = true;
+                        continue;
+                    }
+                    if (next.Open <= 0 &&
+                        next.Low > prediction.StartPrice)
+                    {
+                        MarkNotFilled(
+                            prediction, next, now, "LIMIT_NOT_TOUCHED");
+                        changed = true;
+                        continue;
+                    }
+
+                    prediction.EntryFilledAt = next.Time;
+                    prediction.FilledPrice = next.Open > 0
+                        ? Math.Min(next.Open, prediction.StartPrice)
                         : prediction.StartPrice;
+                    prediction.NextDayNoteCode = next.Open > 0 &&
+                                                 next.Open < prediction.StartPrice
+                        ? "FILLED_BELOW_LIMIT"
+                        : "FILLED_AT_LIMIT";
+                    changed = true;
+                }
+
+                var filled = prediction.FilledPrice ??
+                             prediction.StartPrice;
+                if (prediction.NextDayStatus == "WAITING")
+                {
+                    var (dayOutcome, dayExit) =
+                        ResolveExit(prediction, next);
+                    prediction.NextDayStatus = dayOutcome ?? "OPEN";
+                    prediction.NextDayReturnPercent = NetReturnPercent(
+                        filled, dayExit ?? next.Close);
+                    prediction.NextDayMaximumGainPercent =
+                        NetReturnPercent(filled, next.High);
+                    prediction.NextDayMaximumLossPercent =
+                        NetReturnPercent(filled, next.Low);
+                    changed = true;
+
+                    if (dayOutcome is not null && dayExit.HasValue)
+                    {
+                        CompletePrediction(
+                            prediction, dayOutcome, dayExit.Value, now);
+                        changed = true;
+                    }
                 }
 
                 var entryDate = prediction.EntryFilledAt.Value.Date;
@@ -775,132 +1077,404 @@ public sealed class ScanEngine(
                     .ToList();
                 if (holdingCandles.Count == 0) continue;
 
-                decimal? exitPrice = null;
-                string? outcome = null;
-                foreach (var candle in holdingCandles)
+                if (prediction.Outcome == "PENDING")
                 {
-                    // When target and stop are both inside one daily candle,
-                    // assume the stop was hit first. This avoids optimistic
-                    // look-ahead from unknown intraday ordering.
-                    if (candle.Low <= prediction.StopLoss)
+                    decimal? exitPrice = null;
+                    string? outcome = null;
+                    foreach (var candle in holdingCandles)
                     {
-                        // A stop cannot fill above a gap-down open. Using the
-                        // displayed stop in that case would manufacture a
-                        // better exit—and can even turn a bad gap into profit.
-                        exitPrice = candle.Open > 0
-                            ? Math.Min(candle.Open, prediction.StopLoss)
-                            : prediction.StopLoss;
-                        outcome = "STOP";
-                        break;
+                        (outcome, exitPrice) =
+                            ResolveExit(prediction, candle);
+                        if (outcome is not null) break;
                     }
-                    if (candle.High >= prediction.Target1)
+                    if (outcome is null &&
+                        holdingCandles.Count >=
+                        Math.Max(1, prediction.MaximumHoldingDays))
                     {
-                        exitPrice = prediction.Target1;
-                        outcome = "TARGET";
-                        break;
+                        exitPrice = holdingCandles[^1].Close;
+                        outcome = "TIME_EXIT";
+                    }
+                    if (outcome is not null && exitPrice.HasValue)
+                    {
+                        CompletePrediction(
+                            prediction, outcome, exitPrice.Value, now);
+                        changed = true;
                     }
                 }
 
-                if (outcome is null &&
-                    holdingCandles.Count >=
-                    Math.Max(1, prediction.MaximumHoldingDays))
+                var latest = holdingCandles[^1];
+                var latestReturn = prediction.Outcome == "PENDING"
+                    ? NetReturnPercent(filled, latest.Close)
+                    : prediction.ReturnPercent;
+                if (prediction.LatestObservedDate?.Date != latest.Time.Date ||
+                    prediction.LatestObservedClose != latest.Close ||
+                    prediction.LatestOpenReturnPercent != latestReturn)
                 {
-                    exitPrice = holdingCandles[^1].Close;
-                    outcome = "TIME_EXIT";
+                    prediction.LatestObservedDate = latest.Time;
+                    prediction.LatestObservedClose = latest.Close;
+                    prediction.LatestOpenReturnPercent = latestReturn;
+                    changed = true;
                 }
-                if (outcome is null || !exitPrice.HasValue) continue;
-
-                var filled = prediction.FilledPrice ??
-                             prediction.StartPrice;
-                prediction.EvaluatedAt = now;
-                prediction.EvaluationPrice = exitPrice;
-                var entryCost =
-                    filled * (1m + data.State.BuyFeeRate);
-                var exitProceeds =
-                    exitPrice.Value *
-                    (1m - data.State.SellFeeRate);
-                prediction.ReturnPercent = entryCost <= 0
-                    ? 0
-                    : (exitProceeds / entryCost - 1) * 100;
-                prediction.Outcome = outcome;
             }
         }
+        return changed;
     }
 
-    ScanResult? Evaluate(string symbol, List<Candle> c, bool intraday, bool speculative)
+    static void ResetLegacyEvaluation(PredictionRecord prediction)
     {
-        var min = intraday ? 20 : 55;
-        if (c.Count < min) return null;
-        var last = c[^1];
-        var closes = c.Select(x => x.Close).ToArray();
+        var cancelled = prediction.Outcome == "CANCELLED";
+        prediction.EntryFilledAt = null;
+        prediction.FilledPrice = null;
+        prediction.NextTradingDate = null;
+        prediction.NextOpen = null;
+        prediction.NextHigh = null;
+        prediction.NextLow = null;
+        prediction.NextClose = null;
+        prediction.NextDayStatus = "WAITING";
+        prediction.NextDayNoteCode = "";
+        prediction.NextDayReturnPercent = null;
+        prediction.NextDayMarketReturnPercent = null;
+        prediction.NextDayMaximumGainPercent = null;
+        prediction.NextDayMaximumLossPercent = null;
+        prediction.LatestObservedDate = null;
+        prediction.LatestObservedClose = null;
+        prediction.LatestOpenReturnPercent = null;
+        prediction.EvaluatedAt = cancelled
+            ? prediction.EvaluatedAt
+            : null;
+        prediction.EvaluationPrice = null;
+        prediction.ReturnPercent = cancelled ? 0 : null;
+        prediction.Outcome = cancelled ? "CANCELLED" : "PENDING";
+        prediction.EvaluationVersion = 2;
+    }
+
+    static void CaptureNextTradingDay(
+        PredictionRecord prediction, Candle candle)
+    {
+        prediction.NextTradingDate = candle.Time;
+        prediction.NextOpen = candle.Open;
+        prediction.NextHigh = candle.High;
+        prediction.NextLow = candle.Low;
+        prediction.NextClose = candle.Close;
+        prediction.NextDayMarketReturnPercent =
+            prediction.SignalClose <= 0
+                ? null
+                : (candle.Close / prediction.SignalClose - 1m) * 100m;
+    }
+
+    static void MarkNotFilled(
+        PredictionRecord prediction, Candle candle, DateTime evaluatedAt,
+        string noteCode)
+    {
+        prediction.NextDayStatus = "NOT_FILLED";
+        prediction.NextDayNoteCode = noteCode;
+        prediction.EvaluatedAt = evaluatedAt;
+        prediction.EvaluationPrice = candle.Close;
+        prediction.ReturnPercent = null;
+        prediction.Outcome = "NOT_FILLED";
+    }
+
+    static (string? Outcome, decimal? ExitPrice) ResolveExit(
+        PredictionRecord prediction, Candle candle)
+    {
+        // Daily bars do not reveal which level was touched first. Assuming the
+        // stop first prevents an optimistic evaluation when both are inside
+        // the same candle.
+        if (candle.Low <= prediction.StopLoss)
+            return ("STOP", candle.Open > 0
+                ? Math.Min(candle.Open, prediction.StopLoss)
+                : prediction.StopLoss);
+        if (candle.High >= prediction.Target1)
+            return ("TARGET", prediction.Target1);
+        return (null, null);
+    }
+
+    void CompletePrediction(
+        PredictionRecord prediction, string outcome, decimal exitPrice,
+        DateTime evaluatedAt)
+    {
+        var filled = prediction.FilledPrice ??
+                     prediction.StartPrice;
+        prediction.EvaluatedAt = evaluatedAt;
+        prediction.EvaluationPrice = exitPrice;
+        prediction.ReturnPercent = NetReturnPercent(filled, exitPrice);
+        prediction.Outcome = outcome;
+    }
+
+    decimal NetReturnPercent(decimal entryPrice, decimal exitPrice)
+    {
+        var entryCost = entryPrice * (1m + data.State.BuyFeeRate);
+        var exitProceeds = exitPrice * (1m - data.State.SellFeeRate);
+        return entryCost <= 0
+            ? 0
+            : (exitProceeds / entryCost - 1m) * 100m;
+    }
+
+    ScanResult? Evaluate(
+        string symbol, List<Candle> c, bool intraday,
+        bool speculative, MarketContext marketContext)
+    {
+        var bars = c
+            .Where(x => x.Close > 0 && x.High > 0 && x.Low > 0)
+            .OrderBy(x => x.Time)
+            .ToList();
+        const int minimumBars = 55;
+        if (bars.Count < minimumBars) return null;
+        var last = bars[^1];
+        var closes = bars.Select(x => x.Close).ToArray();
         var sma20 = closes.TakeLast(20).Average();
-        var sma50 = closes.TakeLast(Math.Min(50, closes.Length)).Average();
-        var avgVolume = c.TakeLast(20).Average(x => (decimal)x.Volume);
+        var sma50 = closes.TakeLast(50).Average();
+        var earlierSma20 = closes
+            .Take(closes.Length - 5)
+            .TakeLast(20)
+            .Average();
+        var sma20SlopePercent = earlierSma20 <= 0
+            ? 0
+            : (sma20 / earlierSma20 - 1m) * 100m;
+        var medianVolume = Median(
+            bars.TakeLast(20).Select(x => (decimal)x.Volume));
         var rsi = Rsi(closes, 14);
-        var atr = Atr(c, 14);
+        var atr = Atr(bars, 14);
         if (atr <= 0 || last.Close <= 0) return null;
-        var daily = ToDailyCandles(c);
+        var daily = ToDailyCandles(bars);
+        var signalCandle = daily.LastOrDefault() ?? last;
         var liquidWindow = daily.TakeLast(Math.Min(20, daily.Count)).ToList();
         var medianDailyValue = liquidWindow.Count == 0
             ? 0
             : Median(liquidWindow.Select(x => x.Close * x.Volume));
         var liquidEnough = medianDailyValue >= 2_000_000_000m;
         var priceEligible = last.Close >= 100m;
-        var trendConfirmed = last.Close > sma20 && sma20 > sma50;
-        // Continuous components deliberately avoid score piles such as 80/100.
-        // The former implementation only used +15/+10 blocks, so many unrelated
-        // shares received an identical rating.
-        var scoreValue = 35m;
-        var reasons = new List<string>();
-        var reasonsEn = new List<string>();
+        var distanceFromSma20 = (last.Close / sma20 - 1m) * 100m;
+        var maSpread = (sma20 / sma50 - 1m) * 100m;
+        var return5 = (last.Close / closes[^6] - 1m) * 100m;
+        var return20 = (last.Close / closes[^21] - 1m) * 100m;
+        var volumeRatio = medianVolume <= 0
+            ? 0
+            : last.Volume / medianVolume;
+        var priorHigh20 = bars
+            .SkipLast(1)
+            .TakeLast(20)
+            .Max(x => x.High);
+        var distanceFromHigh20 = priorHigh20 <= 0
+            ? 0
+            : (last.Close / priorHigh20 - 1m) * 100m;
+        var candleRange = last.High - last.Low;
+        var closeStrength = candleRange <= 0
+            ? .5m
+            : Math.Clamp(
+                (last.Close - last.Low) / candleRange, 0m, 1m);
+        var atrPercent = atr / last.Close * 100m;
+
+        // A recommendation now needs independent evidence. Merely being above
+        // MA20 and MA50 can no longer reach the BUY threshold on its own.
+        var scoreValue = 20m;
+        var evidence =
+            new List<(decimal Strength, string Id, string En)>();
         var risks = new List<string>();
         var risksEn = new List<string>();
-        if (last.Close > sma20)
+        var timeframeId = intraday
+            ? "candle 15-menit"
+            : "hari";
+        var timeframeEn = intraday
+            ? "15-minute bars"
+            : "days";
+        var fivePeriodsEn = intraday
+            ? "five 15-minute bars"
+            : "five days";
+        var twentyPeriodEn = intraday
+            ? "20-bar"
+            : "20-day";
+
+        if (marketContext.Regime == "RISK_ON")
+            evidence.Add((
+                36m,
+                $"Rezim pasar RISK-ON: IHSG 20 hari {marketContext.Return20Percent:+0.0;-0.0;0.0}% dan {marketContext.Breadth20Percent:0}% saham berada di atas MA20.",
+                $"The market is RISK-ON: the JCI is {marketContext.Return20Percent:+0.0;-0.0;0.0}% over 20 days and {marketContext.Breadth20Percent:0}% of stocks are above MA20."));
+        else if (marketContext.Regime == "RISK_OFF")
         {
-            scoreValue += 10m + Math.Min(7m, (last.Close / sma20 - 1m) * 100m);
-            reasons.Add("harga di atas rata-rata 20 periode");
-            reasonsEn.Add("price is above the 20-period average");
+            risks.Add(
+                $"rezim pasar RISK-OFF: IHSG 20 hari {marketContext.Return20Percent:+0.0;-0.0;0.0}% dan breadth MA20 {marketContext.Breadth20Percent:0}%; rekomendasi BUY baru diblokir");
+            risksEn.Add(
+                $"the market is RISK-OFF: the JCI is {marketContext.Return20Percent:+0.0;-0.0;0.0}% over 20 days with {marketContext.Breadth20Percent:0}% MA20 breadth; new BUY recommendations are blocked");
+        }
+
+        var aboveSma20 = distanceFromSma20 > 0;
+        var notExtended = distanceFromSma20 <= 7m;
+        if (aboveSma20 && notExtended)
+        {
+            scoreValue += 12m + Math.Min(4m, distanceFromSma20 * .8m);
+            evidence.Add((
+                12m + distanceFromSma20,
+                $"Harga Rp{last.Close:N0} berada {distanceFromSma20:0.0}% di atas MA20 {timeframeId} Rp{sma20:N0}; tren pendek positif tanpa jarak yang berlebihan.",
+                $"Rp{last.Close:N0} is {distanceFromSma20:0.0}% above the {timeframeEn} MA20 of Rp{sma20:N0}; the short trend is positive without excessive extension."));
+        }
+        else if (aboveSma20)
+        {
+            scoreValue -= Math.Min(18m, 8m + distanceFromSma20 - 7m);
+            risks.Add(
+                $"harga sudah {distanceFromSma20:0.0}% di atas MA20 {timeframeId}; entry terlambat dan rawan pullback");
+            risksEn.Add(
+                $"price is already {distanceFromSma20:0.0}% above the {timeframeEn} MA20; the entry is late and vulnerable to a pullback");
         }
         else
         {
-            risks.Add("harga masih di bawah rata-rata 20 periode");
-            risksEn.Add("price remains below the 20-period average");
+            risks.Add(
+                $"harga {Math.Abs(distanceFromSma20):0.0}% di bawah MA20 {timeframeId} Rp{sma20:N0}; tren pendek belum mendukung buy");
+            risksEn.Add(
+                $"price is {Math.Abs(distanceFromSma20):0.0}% below the {timeframeEn} MA20 of Rp{sma20:N0}; the short trend does not support a buy");
         }
-        if (sma20 > sma50)
+
+        var averagesAligned = maSpread > 0;
+        if (averagesAligned)
         {
-            scoreValue += 9m + Math.Min(7m, (sma20 / sma50 - 1m) * 100m);
-            reasons.Add("tren menengah naik");
-            reasonsEn.Add("the medium-term trend is rising");
+            scoreValue += 10m + Math.Min(4m, maSpread);
+            evidence.Add((
+                18m + maSpread,
+                $"MA20 Rp{sma20:N0} berada {maSpread:0.0}% di atas MA50 Rp{sma50:N0}; tren pendek dan menengah searah.",
+                $"MA20 at Rp{sma20:N0} is {maSpread:0.0}% above MA50 at Rp{sma50:N0}; short- and medium-term trends are aligned."));
         }
         else
         {
-            risks.Add("tren menengah belum naik");
-            risksEn.Add("the medium-term trend is not rising yet");
+            risks.Add(
+                $"MA20 masih {Math.Abs(maSpread):0.0}% di bawah MA50; tren menengah belum berbalik naik");
+            risksEn.Add(
+                $"MA20 remains {Math.Abs(maSpread):0.0}% below MA50; the medium-term trend has not turned up");
         }
-        var volumeRatio = avgVolume <= 0 ? 0 : last.Volume / avgVolume;
-        if (volumeRatio > data.State.Strategy.VolumeConfirmation)
+
+        var averageRising = sma20SlopePercent > .05m;
+        if (averageRising)
         {
-            scoreValue += 8m + Math.Min(8m, (volumeRatio - data.State.Strategy.VolumeConfirmation) * 8m);
-            reasons.Add("volume lebih kuat dari normal");
-            reasonsEn.Add("volume is stronger than normal");
+            scoreValue += 8m + Math.Min(4m, sma20SlopePercent * 2m);
+            evidence.Add((
+                20m + sma20SlopePercent,
+                $"MA20 naik {sma20SlopePercent:0.0}% dibanding 5 {timeframeId} lalu; arah rata-rata benar-benar menanjak.",
+                $"MA20 rose {sma20SlopePercent:0.0}% versus {fivePeriodsEn} ago; the average is actually sloping upward."));
         }
-        if (rsi is >= 48 and <= 68)
+        else
         {
-            scoreValue += 6m + Math.Max(0m, 5m - Math.Abs(rsi - 58m) / 2m);
-            reasons.Add("momentum sehat, belum terlalu panas");
-            reasonsEn.Add("momentum is healthy and not overheated");
+            risks.Add(
+                $"kemiringan MA20 {sma20SlopePercent:+0.0;-0.0;0.0}% dalam 5 {timeframeId}; tren belum menguat");
+            risksEn.Add(
+                $"MA20 slope is {sma20SlopePercent:+0.0;-0.0;0.0}% over {fivePeriodsEn}; trend strength is not improving");
+        }
+
+        var momentumConfirmed = return5 > .25m &&
+                                return5 <= 8m &&
+                                rsi is >= 48m and <= 68m;
+        if (momentumConfirmed)
+        {
+            scoreValue += 8m + Math.Min(4m, return5);
+            evidence.Add((
+                24m + return5,
+                $"Momentum 5 {timeframeId} {return5:+0.0;-0.0;0.0}% dan RSI14 {rsi:0}; naiknya terukur tetapi belum overbought.",
+                $"Momentum over {fivePeriodsEn} is {return5:+0.0;-0.0;0.0}% with RSI14 at {rsi:0}; the move is measurable but not overbought."));
+        }
+        else if (return5 <= 0)
+        {
+            risks.Add(
+                $"momentum 5 {timeframeId} masih {return5:+0.0;-0.0;0.0}%; harga belum menunjukkan dorongan naik");
+            risksEn.Add(
+                $"momentum over {fivePeriodsEn} is still {return5:+0.0;-0.0;0.0}%; price has not shown upward drive");
+        }
+        else if (return5 > 8m)
+        {
+            scoreValue -= Math.Min(10m, return5 - 8m);
+            risks.Add(
+                $"harga sudah naik {return5:0.0}% dalam 5 {timeframeId}; risiko mengejar momentum meningkat");
+            risksEn.Add(
+                $"price has already risen {return5:0.0}% over {fivePeriodsEn}; chase risk is elevated");
+        }
+
+        if (return20 > 0 && return20 <= 20m)
+            scoreValue += Math.Min(4m, return20 / 4m);
+
+        var volumeConfirmed =
+            volumeRatio >= data.State.Strategy.VolumeConfirmation;
+        if (volumeConfirmed)
+        {
+            scoreValue += 10m + Math.Min(
+                5m,
+                (volumeRatio - data.State.Strategy.VolumeConfirmation) * 6m);
+            evidence.Add((
+                32m + volumeRatio,
+                $"Volume {volumeRatio:0.00}× median 20 {timeframeId}; pergerakan didukung partisipasi yang lebih besar dari normal.",
+                $"Volume is {volumeRatio:0.00}× the {twentyPeriodEn} median; the move has stronger-than-normal participation."));
+        }
+        else if (volumeRatio < .8m)
+        {
+            scoreValue -= 8m;
+            risks.Add(
+                $"volume hanya {volumeRatio:0.00}× median; kenaikan belum mendapat konfirmasi partisipasi");
+            risksEn.Add(
+                $"volume is only {volumeRatio:0.00}× the median; the rise lacks participation confirmation");
+        }
+        else
+        {
+            risks.Add(
+                $"volume {volumeRatio:0.00}× median, masih di bawah syarat konfirmasi {data.State.Strategy.VolumeConfirmation:0.00}×");
+            risksEn.Add(
+                $"volume is {volumeRatio:0.00}× the median, below the {data.State.Strategy.VolumeConfirmation:0.00}× confirmation requirement");
+        }
+
+        if (rsi is >= 48m and <= 68m)
+            scoreValue += 7m + Math.Max(
+                0m, 3m - Math.Abs(rsi - 58m) / 4m);
+        else if (rsi < 42m)
+        {
+            scoreValue -= 7m;
+            risks.Add($"RSI14 {rsi:0} menunjukkan momentum masih lemah");
+            risksEn.Add($"RSI14 at {rsi:0} shows momentum is still weak");
         }
         if (rsi > 72)
         {
             scoreValue -= 15m + Math.Min(8m, rsi - 72m);
-            risks.Add("momentum sudah terlalu panas");
-            risksEn.Add("momentum is already overheated");
+            risks.Add($"RSI14 {rsi:0} sudah overbought; ruang naik tidak seimbang dengan risiko pullback");
+            risksEn.Add($"RSI14 at {rsi:0} is overbought; upside is not balanced against pullback risk");
         }
+
+        var nearHigh = distanceFromHigh20 >= -1.5m;
+        var strongClose = closeStrength >= .70m;
+        var breakoutConfirmed = nearHigh && strongClose &&
+                                volumeRatio >= 1m;
+        if (breakoutConfirmed)
+        {
+            scoreValue += 8m;
+            evidence.Add((
+                30m + closeStrength,
+                $"Close hanya {Math.Abs(Math.Min(0m, distanceFromHigh20)):0.0}% dari high 20 {timeframeId} dan berada di {closeStrength:P0} rentang candle; tekanan beli bertahan sampai penutupan.",
+                $"The close is only {Math.Abs(Math.Min(0m, distanceFromHigh20)):0.0}% from the {twentyPeriodEn} high and at {closeStrength:P0} of the candle range; buying pressure held into the close."));
+        }
+        else if (nearHigh && volumeRatio < 1m)
+        {
+            risks.Add(
+                $"harga dekat high 20 {timeframeId}, tetapi volume hanya {volumeRatio:0.00}× median; breakout belum terkonfirmasi");
+            risksEn.Add(
+                $"price is near the {twentyPeriodEn} high, but volume is only {volumeRatio:0.00}× the median; the breakout is unconfirmed");
+        }
+        else if (strongClose)
+        {
+            scoreValue += 4m;
+            evidence.Add((
+                16m + closeStrength,
+                $"Close berada di {closeStrength:P0} rentang candle terakhir; pembeli mempertahankan harga dekat area atas.",
+                $"The close is at {closeStrength:P0} of the latest candle range; buyers held price near the upper area."));
+        }
+
         if (!liquidEnough)
         {
             scoreValue -= 20m;
-            risks.Add("median nilai transaksi harian belum mencapai Rp2 miliar");
-            risksEn.Add("daily traded value is below Rp2 billion");
+            risks.Add(
+                $"median nilai transaksi hanya Rp{medianDailyValue / 1_000_000_000m:0.0} miliar/hari, di bawah minimum Rp2 miliar");
+            risksEn.Add(
+                $"median traded value is only Rp{medianDailyValue / 1_000_000_000m:0.0} billion/day, below the Rp2 billion minimum");
+        }
+        else
+        {
+            scoreValue += 5m;
+            evidence.Add((
+                8m,
+                $"Median nilai transaksi Rp{medianDailyValue / 1_000_000_000m:0.0} miliar/hari; likuiditas melewati batas minimum eksekusi.",
+                $"Median traded value is Rp{medianDailyValue / 1_000_000_000m:0.0} billion/day; liquidity clears the execution minimum."));
         }
         if (!priceEligible)
         {
@@ -947,6 +1521,10 @@ public sealed class ScanEngine(
             entryCostPerShare;
         var actualRiskReward =
             actualRewardPerShare / netRiskPerShare;
+        evidence.Add((
+            14m,
+            $"Risk/reward net fee {actualRiskReward:0.00}×: limit Rp{entry:N0}, stop Rp{stop:N0}, target Rp{target1:N0}.",
+            $"Net-fee risk/reward is {actualRiskReward:0.00}×: Rp{entry:N0} limit, Rp{stop:N0} stop and Rp{target1:N0} target."));
         var lotsByRisk = (int)Math.Floor(
             data.State.RiskPerTrade /
             (netRiskPerShare * 100m));
@@ -964,8 +1542,53 @@ public sealed class ScanEngine(
             risks.Add("snapshot intraday sudah lama; jangan entry tanpa cek harga berjalan di Stockbit");
             risksEn.Add("the intraday snapshot is stale; do not enter without checking Stockbit");
         }
-        var eligible = trendConfirmed && liquidEnough &&
+        var priceActionConfirmed = breakoutConfirmed || strongClose;
+        var independentConfirmations =
+            (momentumConfirmed ? 1 : 0) +
+            (volumeConfirmed ? 1 : 0) +
+            (priceActionConfirmed ? 1 : 0);
+        if (independentConfirmations < 3)
+        {
+            risks.Add(
+                $"baru {independentConfirmations}/3 konfirmasi independen yang lolos (momentum, volume, price action); tren rata-rata saja belum cukup untuk BUY");
+            risksEn.Add(
+                $"only {independentConfirmations}/3 independent confirmations passed (momentum, volume and price action); moving-average trend alone is not enough for a BUY");
+        }
+        var trendConfirmed =
+            aboveSma20 && averagesAligned && averageRising;
+        var primarySetup = breakoutConfirmed && volumeConfirmed
+            ? "BREAKOUT 20-HARI + VOLUME"
+            : momentumConfirmed && volumeConfirmed && strongClose
+                ? "TREND–MOMENTUM + VOLUME"
+                : "BELUM ADA SETUP UTAMA";
+        var primarySetupEn = breakoutConfirmed && volumeConfirmed
+            ? "20-DAY BREAKOUT + VOLUME"
+            : momentumConfirmed && volumeConfirmed && strongClose
+                ? "TREND–MOMENTUM + VOLUME"
+                : "NO PRIMARY SETUP YET";
+        var eligible = trendConfirmed && notExtended &&
+                       independentConfirmations == 3 &&
+                       marketContext.Regime != "RISK_OFF" &&
+                       rsi <= 70m && liquidEnough &&
                        priceEligible && freshEnough;
+        var reasons = evidence
+            .OrderByDescending(x => x.Strength)
+            .Take(5)
+            .Select(x => "• " + x.Id)
+            .ToList();
+        var reasonsEn = evidence
+            .OrderByDescending(x => x.Strength)
+            .Take(5)
+            .Select(x => "• " + x.En)
+            .ToList();
+        reasons.Insert(0, $"• SETUP UTAMA: {primarySetup}.");
+        reasonsEn.Insert(0, $"• PRIMARY SETUP: {primarySetupEn}.");
+        var riskText = risks.Count == 0
+            ? $"• Invalidasi utama: opening di atas Rp{entry:N0} atau harga menyentuh stop Rp{stop:N0}."
+            : string.Join("\n", risks.Select(x => "• " + x));
+        var riskTextEn = risksEn.Count == 0
+            ? $"• Primary invalidation: an open above Rp{entry:N0} or price touching the Rp{stop:N0} stop."
+            : string.Join("\n", risksEn.Select(x => "• " + x));
         return new ScanResult
         {
             Symbol = symbol,
@@ -990,14 +1613,36 @@ public sealed class ScanEngine(
             RiskReward = actualRiskReward,
             DataTime = last.Time,
             DataSession = intraday ? "Closing Sesi 1" : "Closing Sesi 2",
-            Reasons = reasons.Count == 0 ? "belum ada konfirmasi kuat" : string.Join(", ", reasons),
+            SignalOpen = signalCandle.Open,
+            SignalHigh = signalCandle.High,
+            SignalLow = signalCandle.Low,
+            SignalClose = signalCandle.Close,
+            MovingAverage20 = sma20,
+            MovingAverage50 = sma50,
+            MovingAverage20SlopePercent = sma20SlopePercent,
+            Return5PeriodsPercent = return5,
+            Return20PeriodsPercent = return20,
+            VolumeRatio = volumeRatio,
+            Rsi14 = rsi,
+            MedianDailyValue = medianDailyValue,
+            AtrPercent = atrPercent,
+            PrimarySetup = primarySetup,
+            PrimarySetupEn = primarySetupEn,
+            ResearchStatus = data.State.Strategy.Training is
+                { QualityGatePassed: true, Status: "READY_FOR_FORWARD_TEST" }
+                    ? "RULE_BASED_TUNED_PARAMETERS"
+                    : "RULE_BASED_UNVALIDATED",
+            MarketReturn20Percent = marketContext.Return20Percent,
+            MarketBreadth20Percent = marketContext.Breadth20Percent,
+            MarketRegime = marketContext.Regime,
+            Reasons = reasons.Count == 0
+                ? "• Belum ada konfirmasi independen yang cukup."
+                : string.Join("\n", reasons),
             ReasonsEn = reasonsEn.Count == 0
-                ? "there is no strong confirmation yet"
-                : string.Join(", ", reasonsEn),
-            Risks = risks.Count == 0 ? "tetap konfirmasi harga dan kondisi IHSG di Stockbit" : string.Join(", ", risks),
-            RisksEn = risksEn.Count == 0
-                ? "always confirm price and IHSG conditions in Stockbit"
-                : string.Join(", ", risksEn),
+                ? "• There is not enough independent confirmation yet."
+                : string.Join("\n", reasonsEn),
+            Risks = riskText,
+            RisksEn = riskTextEn,
             IsSpeculative = speculative,
             MaximumHoldingDays = 20
         };

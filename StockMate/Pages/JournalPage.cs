@@ -85,11 +85,18 @@ public sealed class JournalPage : ContentPage
     {
         _list.Children.Clear();
         var realized = _data.GetRealizedSummary();
+        var latestImport = _data.State.TransactionImports
+            .OrderByDescending(x => x.ImportedAt)
+            .FirstOrDefault();
         _importInfo.Text = Loc.T(
             $"{_data.State.TransactionImports.Count} file riwayat • " +
-            $"Realized Rp {realized.DisplayValue:N0} • Fee Rp {realized.Fees:N0}",
+            $"Realized Rp {realized.DisplayValue:N0} • Fee Rp {realized.Fees:N0}" +
+            (latestImport is null ? "" :
+                $"\nTerakhir: {latestImport.Provider} {latestImport.CoverageStart:dd MMM yyyy}–{latestImport.CoverageEnd:dd MMM yyyy} • BUY Rp{latestImport.ParsedBuyValue:N0} • SELL Rp{latestImport.ParsedSellValue:N0} • tax Rp{latestImport.ParsedSalesTax:N2} • total tervalidasi"),
             $"{_data.State.TransactionImports.Count} history files • " +
-            $"Realized Rp {realized.DisplayValue:N0} • Fees Rp {realized.Fees:N0}");
+            $"Realized Rp {realized.DisplayValue:N0} • Fees Rp {realized.Fees:N0}" +
+            (latestImport is null ? "" :
+                $"\nLatest: {latestImport.Provider} {latestImport.CoverageStart:dd MMM yyyy}–{latestImport.CoverageEnd:dd MMM yyyy} • BUY Rp{latestImport.ParsedBuyValue:N0} • SELL Rp{latestImport.ParsedSellValue:N0} • tax Rp{latestImport.ParsedSalesTax:N2} • totals validated"));
 
         IEnumerable<TradeTransaction> query = _data.State.Transactions;
         if (!string.IsNullOrWhiteSpace(_search.Text))

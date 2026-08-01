@@ -201,6 +201,8 @@ public sealed class ScanForegroundService : Service
     const int ResultNotificationId = 1402;
     CancellationTokenSource? _cts;
     PowerManager.WakeLock? _wakeLock;
+    long _lastNotificationTicks;
+    int _lastNotificationCompleted = -1;
 
     public override IBinder? OnBind(Intent? intent) => null;
 
@@ -478,6 +480,20 @@ public sealed class ScanForegroundService : Service
     void UpdateNotification(ScanProgress progress)
     {
         ScanServiceBridge.Report(progress);
+        // Building and publishing an Android notification for every request
+        // produced thousands of Binder/layout operations during a full IDX
+        // scan. Keep progress visible, but coalesce routine ticker events.
+        var now = System.Environment.TickCount64;
+        var important = progress.Stage is
+            "PREPARING" or "UNIVERSE_READY" or "BATCH_START" or
+            "BATCH_COMPLETE" or "REQUEST_ERROR" or "RETRY" or
+            "RATE_LIMIT" or "FORBIDDEN_RETRY" or "MARKET_REGIME" or
+            "EVENTS" or "SAVING" or "COMPLETE" or "ERROR";
+        var advanced = progress.Completed >= _lastNotificationCompleted + 5;
+        if (!important && !advanced && now - _lastNotificationTicks < 750)
+            return;
+        _lastNotificationTicks = now;
+        _lastNotificationCompleted = progress.Completed;
         NotificationManagerCompat.From(this).Notify(NotificationId, BuildNotification(progress));
     }
 
@@ -515,13 +531,22 @@ public sealed class ScanForegroundService : Service
                 "UNIVERSE" or "UNIVERSE_REQUEST" or "UNIVERSE_PARSE" =>
                     "Updating IDX universe",
                 "UNIVERSE_READY" => "IDX universe ready",
+                "UNIVERSE_FALLBACK" => "Using the cached IDX universe",
+                "TRADING_DATE" => "Resolving the reference trading date",
                 "BATCH_PLAN" => "Preparing download batches",
+                "BATCH_START" => "Starting a download batch",
+                "BATCH_COMPLETE" => "Download batch completed",
                 "DOWNLOAD" or "REQUEST_START" => "Fetching price data",
                 "REQUEST_OK" => "Price data received",
                 "REQUEST_ERROR" => "Price request failed; continuing",
                 "RETRY" => "Retrying price request",
                 "RATE_LIMIT" => "Waiting for data-source rate limit",
+                "FORBIDDEN_RETRY" => "Access denied; switching endpoint",
                 "WAITING_CLOSE" => "Verifying closing data",
+                "CLOSING_FALLBACK" => "Continuing with available closing data",
+                "MARKET_REGIME" => "Fetching the JCI market regime",
+                "MARKET_REGIME_FALLBACK" =>
+                    "JCI unavailable; using UNKNOWN regime",
                 "EVENTS" => "Updating market events",
                 "ANALYZE" => "Analyzing candidates",
                 "SAVING" => "Saving results",

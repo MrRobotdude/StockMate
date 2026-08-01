@@ -84,6 +84,7 @@ public sealed class DashboardPage : ContentPage
                 "The dashboard shows only the most important status and actions. Tap a card to open calculation details."));
 
             _root.Children.Add(HeroCard(equity, invested, unrealized));
+            AddDataFreshness();
 
             var two = new Grid
             {
@@ -135,6 +136,62 @@ public sealed class DashboardPage : ContentPage
             detail,
             $"{pct:+0.00;-0.00;0.00}%",
             unrealized >= 0 ? UiKit.Green : UiKit.Red);
+    }
+
+    void AddDataFreshness()
+    {
+        var latestImport = _data.State.TransactionImports
+            .OrderByDescending(x => x.ImportedAt)
+            .FirstOrDefault();
+        var priced = _data.State.Positions.Count(x =>
+            x.LastPrice > 0 && x.MarketPriceAt.HasValue);
+        var missing = _data.State.Positions.Count - priced;
+        var oldestPrice = _data.State.Positions
+            .Where(x => x.MarketPriceAt.HasValue)
+            .Select(x => x.MarketPriceAt)
+            .Min();
+        var newestPrice = _data.State.Positions
+            .Where(x => x.MarketPriceAt.HasValue)
+            .Select(x => x.MarketPriceAt)
+            .Max();
+        var statementText = latestImport is null
+            ? Loc.T(
+                "Belum ada e-Statement aktif.",
+                "There is no active e-Statement yet.")
+            : Loc.T(
+                $"Statement {latestImport.Provider} • periode {latestImport.CoverageStart:dd MMM yyyy}–{latestImport.CoverageEnd:dd MMM yyyy} • diimpor {latestImport.ImportedAt:dd MMM HH:mm} • {latestImport.AddedCount} transaksi aktif.",
+                $"{latestImport.Provider} statement • {latestImport.CoverageStart:dd MMM yyyy}–{latestImport.CoverageEnd:dd MMM yyyy} • imported {latestImport.ImportedAt:dd MMM HH:mm} • {latestImport.AddedCount} active transactions.");
+        var priceText = priced == 0
+            ? Loc.T(
+                "Belum ada harga pasar untuk posisi aktif; nilai pasar tidak disamakan dengan harga modal.",
+                "There are no market prices for active positions; market value is not substituted with cost basis.")
+            : Loc.T(
+                $"Harga tersedia untuk {priced}/{_data.State.Positions.Count} posisi • rentang waktu {oldestPrice:dd MMM HH:mm}–{newestPrice:dd MMM HH:mm}.",
+                $"Prices are available for {priced}/{_data.State.Positions.Count} positions • timestamp range {oldestPrice:dd MMM HH:mm}–{newestPrice:dd MMM HH:mm}.");
+        var detail = new VerticalStackLayout
+        {
+            Spacing = 6,
+            Children =
+            {
+                UiKit.Sub(statementText),
+                UiKit.Sub(priceText),
+                missing > 0
+                    ? UiKit.Caption(Loc.T(
+                        $"{missing} posisi baru/belum terharga. Jalankan Ambil Data agar nilai pasar dan P/L terisi.",
+                        $"{missing} new/unpriced positions remain. Run Fetch Data to populate market value and P/L."))
+                    : UiKit.Caption(Loc.T(
+                        "Portofolio dan harga pasar memiliki sumber serta timestamp terpisah.",
+                        "Portfolio holdings and market prices retain separate sources and timestamps."))
+            }
+        };
+        _root.Children.Add(UiKit.ExpandableCard(
+            Loc.T("Kesegaran data", "Data freshness"),
+            missing == 0
+                ? Loc.T("Posisi dan harga sudah terhubung", "Holdings and prices are linked")
+                : Loc.T($"{missing} posisi menunggu harga", $"{missing} positions await prices"),
+            detail,
+            missing == 0 ? Loc.T("SIAP", "READY") : Loc.T("PERLU SCAN", "SCAN NEEDED"),
+            missing == 0 ? UiKit.Green : UiKit.Purple));
     }
 
     void AddPriorityRecommendations()
@@ -244,12 +301,14 @@ public sealed class DashboardPage : ContentPage
                 ReferencePrice = scan.LastPrice,
                 Detail = lots > 0
                     ? Loc.T(
-                        $"{lots} lot dengan limit Rp {scan.EntryHigh:N0}; batal jika opening di atas Rp {scan.MaxBuyPrice:N0}. " +
+                        $"Setup utama {scan.PrimarySetup}. {lots} lot dengan limit Rp {scan.EntryHigh:N0}; batal jika opening di atas Rp {scan.MaxBuyPrice:N0}. " +
                         $"Teknikal {scan.Score}/100, isu {eventView.Adjustment:+#;-#;0}.",
-                        $"{lots} lots with a Rp {scan.EntryHigh:N0} limit; cancel if the opening is above Rp {scan.MaxBuyPrice:N0}. " +
+                        $"Primary setup {(!string.IsNullOrWhiteSpace(scan.PrimarySetupEn) ? scan.PrimarySetupEn : scan.PrimarySetup)}. {lots} lots with a Rp {scan.EntryHigh:N0} limit; cancel if the opening is above Rp {scan.MaxBuyPrice:N0}. " +
                         $"Technical {scan.Score}/100, events {eventView.Adjustment:+#;-#;0}.")
                     : Loc.T("Setup lolos, tetapi kas belum cukup.", "Setup passed, but cash is insufficient."),
-                RiskDetail = $"Risk/reward {scan.RiskReward:N2}. {eventView.Summary}",
+                RiskDetail = Loc.T(
+                    $"Rezim {scan.MarketRegime}, breadth {scan.MarketBreadth20Percent:0}%. Risk/reward {scan.RiskReward:N2}. {eventView.Summary}",
+                    $"{scan.MarketRegime} regime, {scan.MarketBreadth20Percent:0}% breadth. Risk/reward {scan.RiskReward:N2}. {eventView.Summary}"),
                 Stop = scan.StopLoss, Target = scan.Target1,
                 Priority = (lots > 0 ? 70 : 20) + combinedScore
             };
